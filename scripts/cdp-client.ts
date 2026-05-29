@@ -446,6 +446,73 @@ export class CdpPage {
   }
 
   /**
+   * Navigate to URL, detect login wall, wait for user to manually log in.
+   * If a login wall is detected (redirect to login page), it prints a prompt
+   * and polls until the user completes login in the Chrome window.
+   */
+  async gotoWithLogin(url: string, opts: {
+    timeoutMs?: number;
+    /** URL patterns that indicate a login page (e.g. 'login', 'passport') */
+    loginPatterns?: string[];
+    /** URL patterns that indicate login success (homepage, feed) */
+    successPatterns?: string[];
+  } = {}) {
+    const timeoutMs = opts.timeoutMs || 120_000;
+    const loginPatterns = opts.loginPatterns || [
+      'login', 'passport', 'signin', 'sign_in', 'sign-in',
+      'accounts.google.com', 'verify', 'captcha',
+    ];
+    const successPatterns = opts.successPatterns || [];
+
+    await this.goto(url, { timeoutMs: 35000 });
+    await sleep(1000);
+
+    const currentUrl = await this.url();
+    const isLoginPage = loginPatterns.some(p => currentUrl.includes(p));
+
+    if (!isLoginPage) {
+      console.log('  ✅ 无需登录，直接进入');
+      return this;
+    }
+
+    console.log(`\n🔐 检测到登录页，请在 Chrome 窗口中手动登录：`);
+    console.log(`   当前: ${currentUrl}`);
+    console.log(`   ⏳ 等待登录完成（最多 ${Math.round(timeoutMs / 1000)} 秒）...\n`);
+
+    const deadline = Date.now() + timeoutMs;
+
+    while (Date.now() < deadline) {
+      await sleep(3000);
+      const u = await this.url().catch(() => '');
+
+      // Still on login page? Keep waiting
+      if (loginPatterns.some(p => u.includes(p))) {
+        if (Date.now() % 15000 < 3000) {
+          console.log('  ⏳ 仍在登录页面，继续等待...');
+        }
+        continue;
+      }
+
+      // If success patterns specified, check them
+      if (successPatterns.length > 0) {
+        if (successPatterns.some(p => u.includes(p))) {
+          console.log('  ✅ 登录成功！');
+          await sleep(2000);
+          return this;
+        }
+        continue;
+      }
+
+      // URL changed away from login page
+      console.log('  ✅ 登录成功！');
+      await sleep(2000);
+      return this;
+    }
+
+    throw new Error(`登录超时（${Math.round(timeoutMs / 1000)} 秒）`);
+  }
+
+  /**
    * Set viewport with random jitter (±18px width, ±12px height)
    * to avoid resolution fingerprinting.
    */

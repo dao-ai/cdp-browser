@@ -407,6 +407,24 @@ async function main() {
     }
   }
 
+  if (args.includes('--login')) {
+    const loginIdx = args.indexOf('--login') + 1;
+    const url = loginIdx < args.length ? args[loginIdx] : 'https://www.douyin.com';
+    console.log(`🔐 等待手动登录: ${url}`);
+    console.log('   💡 在 Chrome 窗口中完成登录后，按 Ctrl+C 退出');
+    console.log('   登录态会保留在 Chrome profile 中，后续提取无需重复登录\n');
+    const browser = await connectBrowser();
+    const page = await browser.newPage();
+    await page.setViewport(1280, 720);
+    await page.gotoWithLogin(url, { timeoutMs: 300_000 });
+    const loggedInUrl = await page.url();
+    console.log(`✅ 已登录: ${loggedInUrl}`);
+    await page.close();
+    await browser.close();
+    console.log('💾 登录态已保存到 Chrome profile');
+    process.exit(0);
+  }
+
   if (args.includes('--open-url')) {
     const urlIndex = args.indexOf('--open-url') + 1;
     const url = urlIndex < args.length ? args[urlIndex] : 'https://example.com';
@@ -429,6 +447,7 @@ async function main() {
 选项:
   --test          测试 CDP 连接（含平台检测）
   --status        查看 Chrome 远程调试状态
+  --login [url]   打开 URL 并等待手动登录（默认抖音）
   --open-url <url> 打开 URL 并打印标题
 `);
 }
