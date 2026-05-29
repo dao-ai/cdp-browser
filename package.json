@@ -2,7 +2,7 @@
   "name": "cdp-browser",
   "version": "1.0.0",
   "description": "Cross-platform anti-detection browser automation via Chrome DevTools Protocol. No Playwright/Puppeteer dependency — pure WebSocket CDP with humanized interaction layer.",
-  "repository": "https://github.com/dao-ai/cdp-browser",
+  "repository": "https://github.com/dao-ai/cdb-browser",
   "author": "dao-ai",
   "license": "MIT",
   "keywords": [

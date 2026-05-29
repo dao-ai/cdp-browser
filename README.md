@@ -32,7 +32,7 @@
 
 ```bash
 cd <your-project>
-git clone https://github.com/dao-ai/cdp-browser.git
+git clone https://github.com/dao-ai/cdb-browser.git
 cd cdp-browser
 npm install
 ```
