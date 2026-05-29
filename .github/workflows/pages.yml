@@ -97,13 +97,13 @@ jobs:
           <body>'
 
           LANG_SWITCH_ZH='          <div class="lang-switch">
-            <a class="active" href="/">中文</a>
-            <a href="/en">EN</a>
+            <a class="active" href="./">中文</a>
+            <a href="./en/">EN</a>
           </div>'
 
           LANG_SWITCH_EN='          <div class="lang-switch">
-            <a href="/">中文</a>
-            <a class="active" href="/en">EN</a>
+            <a href="../">中文</a>
+            <a class="active" href="./">EN</a>
           </div>'
 
           BADGES='          <div class="badges">
