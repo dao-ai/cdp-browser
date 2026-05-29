@@ -119,6 +119,23 @@ npx tsx scripts/extract.ts --retries 3 'https://v.douyin.com/xxxx/'
 npx tsx scripts/extract.ts --list
 ```
 
+### 手动登录
+
+```bash
+# 打开抖音等登录，登录态自动保存到 Chrome profile
+npx tsx scripts/cdp-manager.ts --login https://www.douyin.com
+# 登录完后续提取无需重复登
+npx tsx scripts/extract.ts 'https://v.douyin.com/xxxx/'
+```
+
+```typescript
+// 编程调用
+await page.gotoWithLogin('https://www.douyin.com', {
+  loginPatterns: ['login', 'passport'],   // 登录页 URL 特征
+  timeoutMs: 300_000,                      // 等人登录，最多等 5 分钟
+});
+```
+
 ### 编程调用提取器
 
 ```typescript
@@ -174,6 +191,7 @@ CdpPage.setBehaviorProfile(null);
 | 等待新页 | `browser.waitForNewPage()` | 监听 Target.created |
 | HTML | `page.content()` | 完整源码 |
 | 等待元素 | `page.waitForSelector(sel, ms)` | 轮询 CSS 选择器 |
+| 手动登录 | `page.gotoWithLogin(url, opts)` | 检测登录墙，等人登录完再继续 |
 | 注入脚本 | `page.addInitScript(src)` | 页面加载前执行 |
 | Cookie | `page.getCookies()` / `setCookie()` / `clearCookies()` | 管理 cookie |
 | 清除数据 | `browser.clearSiteData(origins)` | 清 cookie/storage/cache |

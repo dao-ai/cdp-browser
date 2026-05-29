@@ -91,6 +91,21 @@ const batch = await batchExtract([url1, url2], { retries: 2 });
 // batch.summary → { total, success, failed, totalElapsedMs, avgElapsedMs }
 ```
 
+### Manual Login
+
+```bash
+npx tsx scripts/cdp-manager.ts --login https://www.douyin.com
+# Login in the Chrome window, cookies saved to profile
+npx tsx scripts/extract.ts 'https://v.douyin.com/xxxx/'
+```
+
+```typescript
+await page.gotoWithLogin('https://www.douyin.com', {
+  loginPatterns: ['login', 'passport'],
+  timeoutMs: 300_000,  // wait up to 5 min for manual login
+});
+```
+
 ### Behavior Profiles
 
 ```typescript
@@ -122,6 +137,7 @@ CdpPage.setBehaviorProfile(profile);                     // apply globally
 | Wait for popup | `browser.waitForNewPage()` | |
 | HTML content | `page.content()` | Full source |
 | Wait for selector | `page.waitForSelector(sel, ms)` | SPA-ready polling |
+| Manual login | `page.gotoWithLogin(url, opts)` | Detect login wall, wait for user |
 | Script injection | `page.addInitScript(src)` | Before page loads |
 | Cookie API | `getCookies()` / `setCookie()` / `clearCookies()` | |
 | Clear data | `browser.clearSiteData(origins)` | Cookies/storage/cache |
