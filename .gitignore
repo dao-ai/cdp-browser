@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.codegraph/
+*.db
+*.db-shm
+*.db-wal
+behavior-*.json
+*.log
+.env

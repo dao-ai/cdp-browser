@@ -1,0 +1,30 @@
+{
+  "name": "cdp-browser",
+  "version": "1.0.0",
+  "description": "Cross-platform anti-detection browser automation via Chrome DevTools Protocol. No Playwright/Puppeteer dependency — pure WebSocket CDP with humanized interaction layer.",
+  "repository": "https://github.com/dao-ai/cdp-browser",
+  "author": "dao-ai",
+  "license": "MIT",
+  "keywords": [
+    "cdp",
+    "chrome-devtools-protocol",
+    "anti-detection",
+    "browser-automation",
+    "web-scraping",
+    "humanized-interaction",
+    "typescript"
+  ],
+  "scripts": {
+    "test": "npx tsx scripts/cdp-manager.ts --test",
+    "status": "npx tsx scripts/cdp-manager.ts --status",
+    "extract": "npx tsx scripts/extract.ts",
+    "open": "npx tsx scripts/cdp-manager.ts --open-url"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.4.0"
+  }
+}
