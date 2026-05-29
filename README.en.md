@@ -194,6 +194,22 @@ cdp-browser/
 
 ---
 
+## 🤖 Built By AI
+
+This project is **100% AI-generated** — zero lines of human-written code.
+
+| Role | Tool / Model |
+|------|-------------|
+| AI Framework | [OpenClaw](https://openclaw.ai) |
+| Main Model | DeepSeek V4 Pro |
+| Sub-agents | DeepSeek V4 Flash |
+| Code Analysis | CodeGraph |
+| Debug & Test | OpenClaw Browser (CDP → Windows Chrome) |
+| Dev Environment | WSL2 (Ubuntu) on Windows 11 |
+| Iterations | 5 rounds, 0 human-written lines |
+
+---
+
 ## License
 
 [MIT](./LICENSE) © 2026 dao-ai

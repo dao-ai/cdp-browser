@@ -301,6 +301,22 @@ import { extract as weiboExtract } from './weibo';
 
 ---
 
+## 🤖 开发方式
+
+本项目 **100% 由 AI Agent 编写**，无人工手写代码。
+
+| 角色 | 工具/模型 |
+|------|----------|
+| AI 框架 | [OpenClaw](https://openclaw.ai) |
+| 主模型 | DeepSeek V4 Pro |
+| 子代理 | DeepSeek V4 Flash |
+| 代码分析 | CodeGraph |
+| 调试测试 | OpenClaw Browser (CDP 直连 Windows Chrome) |
+| 开发环境 | WSL2 (Ubuntu) on Windows 11 |
+| 总轮次 | 5 轮迭代，0 行人类代码 |
+
+---
+
 ## 📄 License
 
 [MIT](./LICENSE) © 2026 dao-ai
