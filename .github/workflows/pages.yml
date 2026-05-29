@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'README.md'
+      - 'README.en.md'
       - '.github/workflows/pages.yml'
       - 'references/**'
   workflow_dispatch:
@@ -24,37 +25,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Generate site
+      - name: Install dependencies
+        run: npm install marked@14
+
+      - name: Build HTML pages
         run: |
-          cat > index.html << 'HTMLEOF'
-          <!DOCTYPE html>
-          <html lang="zh-CN">
+          HEAD='<!DOCTYPE html>
+          <html lang="{LANG}">
           <head>
           <meta charset="UTF-8">
           <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>CDP Browser — 反检测浏览器自动化</title>
+          <title>CDP Browser — Anti-Detection Browser Automation</title>
           <style>
             :root {
-              --bg: #0d1117;
-              --card: #161b22;
-              --border: #30363d;
-              --text: #c9d1d9;
-              --head: #f0f6fc;
-              --link: #58a6ff;
-              --code-bg: #161b22;
-              --tag-bg: #1f6feb22;
-              --tag-text: #58a6ff;
-              --green: #3fb950;
+              --bg: #0d1117; --card: #161b22; --border: #30363d;
+              --text: #c9d1d9; --head: #f0f6fc; --link: #58a6ff;
+              --code-bg: #161b22; --tag-bg: #1f6feb22; --tag-text: #58a6ff;
             }
             * { box-sizing: border-box; margin: 0; padding: 0; }
             body {
               font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
-              background: var(--bg);
-              color: var(--text);
-              line-height: 1.7;
-              max-width: 900px;
-              margin: 0 auto;
-              padding: 20px;
+              background: var(--bg); color: var(--text); line-height: 1.7;
+              max-width: 900px; margin: 0 auto; padding: 20px;
             }
             h1 { font-size: 2em; color: var(--head); margin: 24px 0 16px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
             h2 { font-size: 1.5em; color: var(--head); margin: 24px 0 12px; }
@@ -63,62 +55,87 @@ jobs:
             a { color: var(--link); text-decoration: none; }
             a:hover { text-decoration: underline; }
             code {
-              background: var(--code-bg);
-              padding: 2px 6px;
-              border-radius: 4px;
-              font-size: 0.9em;
-              font-family: "JetBrains Mono", "Fira Code", monospace;
+              background: var(--code-bg); padding: 2px 6px; border-radius: 4px;
+              font-size: 0.9em; font-family: "JetBrains Mono", "Fira Code", monospace;
             }
             pre {
-              background: var(--code-bg);
-              border: 1px solid var(--border);
-              border-radius: 8px;
-              padding: 16px;
-              overflow-x: auto;
-              margin: 12px 0;
+              background: var(--code-bg); border: 1px solid var(--border);
+              border-radius: 8px; padding: 16px; overflow-x: auto; margin: 12px 0;
             }
-            pre code {
-              background: none;
-              padding: 0;
-              font-size: 0.85em;
-            }
-            table {
-              width: 100%;
-              border-collapse: collapse;
-              margin: 12px 0;
-            }
-            th, td {
-              border: 1px solid var(--border);
-              padding: 8px 12px;
-              text-align: left;
-            }
+            pre code { background: none; padding: 0; font-size: 0.85em; }
+            table { width: 100%; border-collapse: collapse; margin: 12px 0; }
+            th, td { border: 1px solid var(--border); padding: 8px 12px; text-align: left; }
             th { background: var(--card); color: var(--head); }
             tr:nth-child(even) { background: var(--card); }
             ul, ol { padding-left: 24px; margin: 8px 0; }
             li { margin: 4px 0; }
             blockquote {
-              border-left: 3px solid var(--link);
-              padding: 4px 16px;
-              color: #8b949e;
-              margin: 12px 0;
+              border-left: 3px solid var(--link); padding: 4px 16px;
+              color: #8b949e; margin: 12px 0;
             }
             hr { border: none; border-top: 1px solid var(--border); margin: 24px 0; }
-            img[alt="badge"], img[src*="shields.io"] { display: none; }
+            img[src*="shields.io"] { display: none; }
+            .lang-switch {
+              position: fixed; top: 16px; right: 20px; z-index: 100;
+              display: flex; gap: 4px;
+            }
+            .lang-switch a {
+              padding: 4px 12px; border-radius: 6px; font-size: 13px;
+              background: var(--card); border: 1px solid var(--border);
+              color: var(--text); text-decoration: none;
+              transition: all 0.15s;
+            }
+            .lang-switch a:hover { border-color: var(--link); color: var(--head); }
+            .lang-switch a.active {
+              background: var(--tag-bg); border-color: var(--link);
+              color: var(--link); font-weight: 600;
+            }
             .badges { margin-bottom: 20px; }
             .badges a { margin-right: 8px; display: inline-block; }
           </style>
           </head>
-          <body>
-          <div class="badges">
+          <body>'
+
+          LANG_SWITCH_ZH='          <div class="lang-switch">
+            <a class="active" href="/">中文</a>
+            <a href="/en">EN</a>
+          </div>'
+
+          LANG_SWITCH_EN='          <div class="lang-switch">
+            <a href="/">中文</a>
+            <a class="active" href="/en">EN</a>
+          </div>'
+
+          BADGES='          <div class="badges">
             <a href="https://github.com/dao-ai/cdp-browser/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
             <img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript">
             <img src="https://img.shields.io/badge/dependencies-ws%20only-2ea44f">
             <img src="https://img.shields.io/badge/chrome-cdp-brightgreen">
             <img src="https://img.shields.io/badge/platform-Windows%20|%20WSL%20|%20Linux-lightgrey">
-          </div>
-          HTMLEOF
-          npx marked README.md >> index.html
-          echo '</body></html>' >> index.html
+          </div>'
+
+          FOOT='</body></html>'
+
+          # Build Chinese page (index.html)
+          (
+            echo "${HEAD//\{LANG\}/zh-CN}"
+            echo "$LANG_SWITCH_ZH"
+            echo "$BADGES"
+            npx marked README.md
+            echo "$FOOT"
+          ) > index.html
+
+          # Build English page
+          mkdir -p en
+          (
+            echo "${HEAD//\{LANG\}/en}"
+            echo "$LANG_SWITCH_EN"
+            echo "$BADGES"
+            npx marked README.en.md
+            echo "$FOOT"
+          ) > en/index.html
+
+          echo "✅ Pages built"
 
       - uses: actions/upload-pages-artifact@v3
         with:
