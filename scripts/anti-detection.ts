@@ -88,6 +88,40 @@ function weixinScripts(): string[] {
   ];
 }
 
+function bilibiliScripts(): string[] {
+  return [
+    ...baseScripts(),
+    // B站检测较少，基础 anti-detection 足够
+    `Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] })`,
+  ];
+}
+
+function weiboScripts(): string[] {
+  return [
+    ...baseScripts(),
+    `Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh'] })`,
+    `Object.defineProperty(navigator, 'platform', { get: () => 'Win32' })`,
+  ];
+}
+
+function zhihuScripts(): string[] {
+  return [
+    ...baseScripts(),
+    // 知乎行为分析严格，额外伪造一些特征
+    `Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] })`,
+    `Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 8 })`,
+    `Object.defineProperty(navigator, 'deviceMemory', { get: () => 8 })`,
+  ];
+}
+
+function baiduScripts(): string[] {
+  return [
+    ...baseScripts(),
+    // 百度反爬主要靠频率，single page 无需特殊处理
+    `Object.defineProperty(navigator, 'languages', { get: () => ['zh-CN', 'zh', 'en'] })`,
+  ];
+}
+
 // ─── 按域名自动选择 ───────────────────────────────────────
 
 const SITE_STRATEGIES: Record<string, () => string[]> = {
@@ -99,6 +133,13 @@ const SITE_STRATEGIES: Record<string, () => string[]> = {
   'jd.com': taobaoScripts,
   'weixin.qq.com': weixinScripts,
   'mp.weixin.qq.com': weixinScripts,
+  'bilibili.com': bilibiliScripts,
+  'b23.tv': bilibiliScripts,
+  'weibo.com': weiboScripts,
+  'm.weibo.cn': weiboScripts,
+  'zhihu.com': zhihuScripts,
+  'zhuanlan.zhihu.com': zhihuScripts,
+  'baidu.com': baiduScripts,
 };
 
 function detectSite(url: string): string {
@@ -135,4 +176,4 @@ export async function deployAntiDetection(page: CdpPage, url: string) {
   }
 }
 
-export { baseScripts, douyinScripts, xiaohongshuScripts, taobaoScripts, weixinScripts };
+export { baseScripts, douyinScripts, xiaohongshuScripts, taobaoScripts, weixinScripts, bilibiliScripts, weiboScripts, zhihuScripts, baiduScripts };

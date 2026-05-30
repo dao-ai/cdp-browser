@@ -21,8 +21,86 @@
 - **人类化交互层** — 贝塞尔曲线鼠标移动、逐字拟真键入（字符间隔 28–55ms + 偶发停顿）、多步自然滚动、随机视口抖动（±18px）
 - **行为画像系统** — 录制真人操作习惯并复现，进一步提升拟真度
 - **跨平台自动连接** — Windows 直连、WSL 通过 `netsh` 端口转发、Linux 可连远程 Chrome，一键启动
-- **内置网站提取器** — 抖音、快手、小红书内容一键提取，统一数据格式，支持批量提取+自动重试
+- **10 站内容提取器** — 抖音、快手、小红书、B站、微博、淘宝、京东、拼多多、知乎、百度，统一格式一行提取
 - **TypeScript 原生** — 全程 TypeScript，完整类型定义
+
+---
+
+## 💬 在对话中使用
+
+在 OpenClaw 对话中直接描述你的需求，Agent 会自动调用 CDP 浏览器。支持自然语言触发。
+
+### 内容提取
+
+```
+帮我提取这个抖音视频的信息：https://v.douyin.com/xxxx/
+
+帮我批量提取这些链接：
+- https://v.douyin.com/xxx/
+- https://www.xiaohongshu.com/explore/yyy
+
+看看这个京东商品的价格和店铺：https://item.jd.com/100038004372.html
+
+知乎这个问题 https://www.zhihu.com/question/xxx 有几条回答？
+```
+
+### 网页自动化
+
+```
+打开百度，搜索"AI大模型"，截图保存
+
+帮我登录这个网站 https://example.com/login，用户名 admin 密码 123456
+
+打开 B站首页，把所有视频标题抓下来
+
+帮我填这个表单：https://example.com/register
+- 姓名: 张三  gender: 男  agree: 勾选
+```
+
+### 调试 & 监控
+
+```
+打开 https://example.com，帮我看看 console 有没有报错
+
+这个页面 https://example.com/video 有没有视频地址？帮我抓出来
+
+打开页面看看有没有弹 alert，有的话自动点掉
+```
+
+### 配置 & 管理
+
+```
+帮我用代理 127.0.0.1:7890 打开 https://example.com
+启动一个独立 Chrome 实例走代理爬数据
+
+检查一下 Chrome 远程调试状态
+现在 Chrome 连着吗？
+```
+
+### 编程调用
+
+如果需要在代码中调用而非对话：
+
+```typescript
+// 对话中也可以直接贴代码让 Agent 执行
+import { extract } from './scripts/extractors';
+const info = await extract('https://v.douyin.com/xxxx/');
+```
+
+### 触发关键词
+
+自然提到以下任意关键词即可触发 CDP 技能：
+- 网站名：抖音、小红书、B站、京东、淘宝、拼多多、知乎、微博、快手、百度
+- 操作类：提取、截图、搜索、登录、抓取、打开、填表、视频地址
+- 工具类：CDP、Chrome、浏览器自动化、反检测
+
+示例对话：
+
+> 👤 帮我看看这个京东商品多少钱：https://item.jd.com/xxx.html  
+> 🤖 `connectBrowser` → 打开京东 → 抓取价格和标题 → 返回结果
+
+> 👤 抖音上"中老年养生"这个关键词能搜到什么？  
+> 🤖 CDP 反检测 → 抖音搜索 → 返回搜索结果列表
 
 ---
 
@@ -176,25 +254,25 @@ CdpPage.setBehaviorProfile(null);
 
 | 操作 | 方法 | 说明 |
 |------|------|------|
-| 连接 | `connectBrowser()` | 自动检测/启动 Chrome |
-| 新标签 | `browser.newPage()` | 自带 anti-detection 注入 |
-| 导航 | `page.goto(url, opts?)` | 自动等待加载 |
-| 刷新/后退/前进 | `page.reload()` / `goBack()` / `goForward()` | 页面导航 |
-| 执行 JS | `page.evaluate(fn)` | 支持字符串/函数 |
-| 点击 | `page.click(selector)` | 贝塞尔曲线鼠标轨迹 |
+| 连接 | `connectBrowser(opts?)` | 自动检测/启动 Chrome，支持代理和独立实例 |
+| 新页面 | `browser.newPage()` | 自带 anti-detection 注入 |
+| 导航 | `page.goto(url)` | 自动等待加载 + 站点反检测 |
+| 执行 JS | `page.evaluate(expr)` | ⚠️ 必须用字符串！ |
+| 内容 | `page.content()` / `page.innerText()` | 获取 HTML / 纯文本 |
+| 点击 | `page.click(sel)` | 贝塞尔鼠标轨迹 |
 | 打字 | `page.typeText(text)` | 逐字符拟真输入 |
-| 填值 | `page.fillInput(sel, val)` | 兼容 React/Vue |
+| 填值 | `page.fillInput(sel, val)` | React/Vue 兼容 |
 | 滚动 | `page.scrollBy(dx, dy)` | 多步微滚 |
-| 截图 | `page.screenshot(opts?)` | 支持 clip 区域 |
-| 截图元素 | `page.screenshotElement(sel, path)` | 自动定位 |
-| 等待请求 | `page.waitForResponse(pattern)` | URL 关键词匹配 |
-| 等待新页 | `browser.waitForNewPage()` | 监听 Target.created |
-| HTML | `page.content()` | 完整源码 |
-| 等待元素 | `page.waitForSelector(sel, ms)` | 轮询 CSS 选择器 |
-| 手动登录 | `page.gotoWithLogin(url, opts)` | 检测登录墙，等人登录完再继续 |
-| 注入脚本 | `page.addInitScript(src)` | 页面加载前执行 |
-| Cookie | `page.getCookies()` / `setCookie()` / `clearCookies()` | 管理 cookie |
-| 清除数据 | `browser.clearSiteData(origins)` | 清 cookie/storage/cache |
+| 截图 | `page.screenshot({ path })` | 全页/元素截图 |
+| PDF | `page.saveAsPDF(path, opts?)` | Chrome 打印引擎渲染 |
+| 弹框 | `page.enableAutoDialog()` | alert/confirm/prompt 自动点掉 |
+| 崩溃 | `page.enableCrashAutoRestore()` | 页面崩了自动恢复 |
+| 控制台 | `page.enableConsoleCapture({ verbose })` | 抓 console.log 输出 |
+| 拦截 | `page.blockResources(['Image'])` | 屏蔽图片/字体加速 |
+| 嗅探 | `page.enableMediaSniffing({ verbose })` | 检测视频/音频流 |
+| Cookie | `getCookies()` / `setCookie()` / `clearCookies()` | 管理 cookie |
+| 登录 | `page.gotoWithLogin(url)` | 检测登录墙等人登录 |
+| 连接池 | `createPool({ maxPages: 4 })` | 页面复用，并发安全 |
 | 闭合 | `page.close()` / `browser.close()` | 清理 session |
 
 ### 提取器返回类型
@@ -255,24 +333,31 @@ const scripts = getScriptsForUrl('https://www.douyin.com');
 ```
 cdp-browser/
 ├── scripts/
-│   ├── cdp-client.ts          # 核心 CDP 客户端（CdpBrowser, CdpPage）
-│   ├── cdp-manager.ts         # 跨平台 Chrome 启动/连接管理
-│   ├── anti-detection.ts      # 反检测脚本注入引擎
-│   ├── behavior-profile.ts    # 真人行为画像录制与回放
-│   ├── extract.ts             # 一键提取 CLI 入口
+│   ├── cdp-client.ts          # 核心类（CdpConnection/CdpBrowser/CdpPage）
+│   ├── cdp-manager.ts         # 连接管理（跨平台/代理/独立实例）
+│   ├── cdp-pool.ts            # 页面连接池
+│   ├── anti-detection.ts      # 反检测脚本工厂（11 站策略）
+│   ├── behavior-profile.ts    # 行为画像录制
+│   ├── form-helper.ts         # 表单自动化
+│   ├── form-submit.ts         # 表单 CLI
+│   ├── extract.ts             # 提取器 CLI
+│   ├── media-sniff.ts         # 媒体嗅探 CLI
+│   ├── reconnect-test.ts      # 断线重连测试
+│   ├── pool-test.ts           # 连接池测试
+│   ├── resource-block-test.ts # 资源拦截测试
 │   └── extractors/
-│       ├── index.ts           # 提取器注册表 + extract/batchExtract API
-│       ├── types.ts           # 统一结果类型定义
-│       ├── douyin.ts          # 抖音提取器
-│       ├── kuaishou.ts        # 快手提取器
-│       └── xiaohongshu.ts     # 小红书提取器
+│       ├── index.ts           # 提取器注册表 + extract/batchExtract
+│       ├── types.ts           # 统一返回类型
+│       ├── test-all.ts        # 全站实测脚本
+│       ├── douyin.ts / kuaishou.ts / xiaohongshu.ts
+│       ├── bilibili.ts / weibo.ts
+│       ├── taobao.ts / jd.ts / pdd.ts
+│       └── zhihu.ts / baidu.ts
 ├── references/
 │   ├── extractors.md          # 提取器开发指南
 │   └── site-strategies.md     # 各站反检测策略详解
-├── SKILL.md                   # OpenClaw 技能定义文档
+├── SKILL.md                   # OpenClaw 技能文档
 ├── package.json
-├── tsconfig.json
-├── LICENSE
 └── README.md
 ```
 

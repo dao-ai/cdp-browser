@@ -57,12 +57,31 @@ export interface ExtractorRule {
 import { extract as douyinExtract } from './douyin';
 import { extract as kuaishouExtract } from './kuaishou';
 import { extract as xiaohongshuExtract } from './xiaohongshu';
+import { extract as bilibiliExtract } from './bilibili';
+import { extract as weiboExtract } from './weibo';
+import { extract as taobaoExtract } from './taobao';
+import { extract as jdExtract } from './jd';
+import { extract as pddExtract } from './pdd';
+import { extract as zhihuExtract } from './zhihu';
+import { extract as baiduExtract } from './baidu';
 
 const REGISTRY: ExtractorRule[] = [
   { domain: 'douyin.com', name: '抖音', extract: douyinExtract },
   { domain: 'kuaishou.com', name: '快手', extract: kuaishouExtract },
   { domain: 'xiaohongshu.com', name: '小红书', extract: xiaohongshuExtract },
   { domain: 'xhslink.com', name: '小红书', extract: xiaohongshuExtract },
+  { domain: 'bilibili.com', name: 'B站', extract: bilibiliExtract },
+  { domain: 'b23.tv', name: 'B站', extract: bilibiliExtract },
+  { domain: 'weibo.com', name: '微博', extract: weiboExtract },
+  { domain: 'm.weibo.cn', name: '微博', extract: weiboExtract },
+  { domain: 'taobao.com', name: '淘宝', extract: taobaoExtract },
+  { domain: 'tmall.com', name: '天猫', extract: taobaoExtract },
+  { domain: 'jd.com', name: '京东', extract: jdExtract },
+  { domain: '3.cn', name: '京东', extract: jdExtract },
+  { domain: 'pinduoduo.com', name: '拼多多', extract: pddExtract },
+  { domain: 'yangkeduo.com', name: '拼多多', extract: pddExtract },
+  { domain: 'zhihu.com', name: '知乎', extract: zhihuExtract },
+  { domain: 'baidu.com', name: '百度', extract: baiduExtract },
 ];
 
 // ─── 自动匹配 ──────────────────────────────────────────────
