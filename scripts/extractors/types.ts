@@ -25,4 +25,6 @@ export interface ExtractorResult {
   coverUrl?: string;
   /** 站点特定原始数据 */
   raw?: Record<string, any>;
+  /** 是否需要登录才能提取（页面跳到了登录页） */
+  loginRequired?: boolean;
 }

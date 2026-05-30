@@ -84,6 +84,26 @@ const REGISTRY: ExtractorRule[] = [
   { domain: 'baidu.com', name: '百度', extract: baiduExtract },
 ];
 
+// ─── 登录墙检测 ───────────────────────────────────────────
+
+/** 检测提取结果是否遇到了登录墙 */
+function isLoginWall(result: ExtractorResult): string | null {
+  const t = (result.title || '').toLowerCase();
+  const d = (result.description || '').toLowerCase();
+  const u = (result.url || '').toLowerCase();
+
+  // 标题直接是"登录"
+  if (t === '登录' || t === '请登录' || t === 'login' || t === 'sign in') return '需要登录';
+  // URL 跳到了登录页
+  if (u.includes('/login') || u.includes('/passport') || u.includes('/signin') || u.includes('/auth')) return '跳转到登录页';
+  // 标题是泛化的域名/站名（说明没拿到具体内容）
+  if (t === '小红书' || t === '拼多多商城' || t === '微博正文' || t === '抖音精选电脑版' || t === '出错啦! - bilibili.com') return '需要登录或内容不可访问';
+  // 描述或标题提到"请登录"
+  if (d.includes('请登录') || t.includes('请先登录') || d.includes('请先登录')) return '需要登录';
+
+  return null;
+}
+
 // ─── 自动匹配 ──────────────────────────────────────────────
 
 function matchExtractor(url: string): ExtractorRule | null {
@@ -152,7 +172,11 @@ export async function extract(
 
     const timed: TimedExtractorResult = { ...result, site: rule.name, elapsedMs, retries: actualRetries };
 
-    if (actualRetries > 0) {
+    const loginIssue = isLoginWall(result);
+    if (loginIssue) {
+      timed.loginRequired = true;
+      console.log(`🔐 ${rule.name}: ${loginIssue} → ${result.title || url} (${elapsedMs}ms)`);
+    } else if (actualRetries > 0) {
       console.log(`✅ ${rule.name}: ${result.title || url} (${elapsedMs}ms, ${actualRetries} 次重试)`);
     } else {
       console.log(`✅ ${rule.name}: ${result.title || url} (${elapsedMs}ms)`);
@@ -208,8 +232,16 @@ export async function batchExtract(
         const { result, retries: actualRetries, elapsedMs } = await retryExtract(
           rule, url, browser, { retries, retryDelayMs }
         );
-        const retryTag = actualRetries > 0 ? ` (${actualRetries} 次重试)` : '';
-        console.log(`✅ [${i + 1}/${urls.length}] ${rule.name}: ${result.title || url} (${elapsedMs}ms${retryTag})`);
+
+        // 登录墙检测
+        const loginIssue = isLoginWall(result);
+        if (loginIssue) {
+          result.loginRequired = true;
+          console.log(`🔐 [${i + 1}/${urls.length}] ${rule.name}: ${loginIssue} → ${result.title || url} (${elapsedMs}ms)`);
+        } else {
+          const retryTag = actualRetries > 0 ? ` (${actualRetries} 次重试)` : '';
+          console.log(`✅ [${i + 1}/${urls.length}] ${rule.name}: ${result.title || url} (${elapsedMs}ms${retryTag})`);
+        }
         results.push({ ...result, site: rule.name, elapsedMs, retries: actualRetries });
         success++;
       } catch (err: any) {
@@ -237,11 +269,17 @@ export async function batchExtract(
     results,
   };
 
-  console.log([
+  const loginCount = results.filter(r => r.loginRequired).length;
+
+  const lines = [
     `\n📊 批量提取完成`,
     `   成功: ${success}  失败: ${failed}  总耗时: ${(totalElapsedMs / 1000).toFixed(1)}s`,
     `   平均: ${summary.avgElapsedMs}ms/条`,
-  ].join('\n'));
+  ];
+  if (loginCount > 0) {
+    lines.push(`   🔐 需登录: ${loginCount} 条 → 用 cookie-manager.ts 保存登录态后重试`);
+  }
+  console.log(lines.join('\n'));
 
   return summary;
 }
