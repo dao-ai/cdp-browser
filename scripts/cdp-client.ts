@@ -1719,10 +1719,74 @@ export class CdpPage {
     try {
       await this._sessionCall('Network.clearBrowserCookies');
     } catch {
-      // Fallback: clear per-origin
       const url = await this.url();
       try { await this._sessionCall('Storage.clearDataForOrigin', { origin: new URL(url).origin, storageTypes: 'cookies' }); } catch {}
     }
+  }
+
+  /**
+   * 保存当前页面的 cookie 到文件（JSON）。
+   * 配合 loadCookies() 实现一次登录，永久复用。
+   *
+   * 示例:
+   *   // 登录后保存
+   *   await page.goto('https://www.taobao.com');
+   *   await page.gotoWithLogin(...);  // 手动登录
+   *   await page.saveCookies('/data/cookies/taobao.json');
+   *
+   *   // 下次直接恢复
+   *   await page.loadCookies('/data/cookies/taobao.json');
+   *   await page.goto('https://item.taobao.com/...');  // 已登录！
+   */
+  async saveCookies(filePath: string) {
+    const cookies = await this.getCookies();
+    const dir = filePath.substring(0, filePath.lastIndexOf('/'));
+    if (dir && !fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify({ savedAt: new Date().toISOString(), count: cookies.length, cookies }, null, 2));
+    console.log(`💾 保存 ${cookies.length} 个 cookie → ${filePath}`);
+    return cookies.length;
+  }
+
+  /**
+   * 从文件恢复 cookie 到当前页面。
+   * 恢复前会自动导航到目标域名（确保 cookie domain 匹配）。
+   */
+  async loadCookies(filePath: string) {
+    if (!fs.existsSync(filePath)) {
+      console.warn(`⚠️ Cookie 文件不存在: ${filePath}`);
+      return 0;
+    }
+    const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    const cookies = data.cookies || [];
+    if (cookies.length === 0) return 0;
+
+    // 先导航到目标域（cookie 需要 domain 匹配）
+    const domain = cookies[0].domain;
+    if (domain && !domain.startsWith('.')) {
+      const currentUrl = await this.url().catch(() => 'about:blank');
+      if (!currentUrl.includes(domain.replace(/^\./, ''))) {
+        await this.goto(`https://${domain.replace(/^\./, '')}`, { timeoutMs: 15000 }).catch(() => {});
+      }
+    }
+
+    let set = 0;
+    for (const c of cookies) {
+      try {
+        await this.setCookie({
+          name: c.name,
+          value: c.value,
+          domain: c.domain,
+          path: c.path || '/',
+          secure: c.secure,
+          httpOnly: c.httpOnly,
+          sameSite: c.sameSite,
+          expires: c.expires,
+        });
+        set++;
+      } catch {}
+    }
+    console.log(`🍪 恢复 ${set}/${cookies.length} 个 cookie ← ${filePath}`);
+    return set;
   }
 
   // ── console capture ──

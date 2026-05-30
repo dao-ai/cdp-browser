@@ -214,6 +214,29 @@ await page.gotoWithLogin('https://www.douyin.com', {
 });
 ```
 
+### Cookie 持久化（一次登录，永久复用）
+
+**解决淘宝/小红书/微博等需要登录的问题。** 登录一次存 Cookie，后续自动恢复。
+
+```bash
+# 登录并保存
+npx tsx scripts/cookie-manager.ts --save taobao --login
+npx tsx scripts/cookie-manager.ts --save xiaohongshu --login
+
+# 查看已保存的登录态
+npx tsx scripts/cookie-manager.ts --list
+
+# 带登录态提取（自动恢复 cookie）
+npx tsx scripts/cookie-manager.ts --extract 'https://item.taobao.com/...'
+```
+
+```typescript
+// 编程方式
+await page.loadCookies('data/cookies/taobao.json');  // 恢复登录态
+await page.goto('https://item.taobao.com/...');       // 直接已登录！
+await page.saveCookies('data/cookies/taobao.json');   // 保存最新
+```
+
 ### 编程调用提取器
 
 ```typescript
