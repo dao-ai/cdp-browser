@@ -189,7 +189,7 @@ export async function fillForm(
     }
 
     // 自动检测类型
-    let detectedType: string;
+    let detectedType: 'text' | 'textarea' | 'select' | 'checkbox' | 'radio' | 'file' = 'text';
     if (overrideType) {
       detectedType = overrideType;
     } else if (typeof val === 'boolean') {
@@ -235,10 +235,15 @@ export async function fillForm(
         break;
       }
       case 'textarea': {
-        // 先清空再用输入
+        // 先聚焦再清空，最后模拟输入
         try {
+          await page.evaluate(`document.querySelector(${JSON.stringify(selector)}).focus()`);
           await page.evaluate(`document.querySelector(${JSON.stringify(selector)}).value = ''`);
         } catch {}
+        if (humanize) {
+          await page.click(selector);
+          await randomDelay(100, 300);
+        }
         await page.typeText(String(val));
         break;
       }

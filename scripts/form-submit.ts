@@ -42,6 +42,7 @@
  *     "successUrl": "/dashboard"
  *   }
  */
+import { isCliMain } from './sites';
 import { connectBrowser } from './cdp-manager';
 import { formSubmit, fillForm, FormConfig, FormFieldValue } from './form-helper';
 import fs from 'fs';
@@ -69,7 +70,7 @@ function parseFields(fieldArgs: string[]): Record<string, FormFieldValue | strin
     if (rawValue.startsWith('select:')) {
       fields[selector] = { value: rawValue.slice(7), type: 'select' } as FormFieldValue;
     } else if (rawValue.startsWith('check:')) {
-      fields[selector] = rawValue.slice(6) === 'true' as any;
+      fields[selector] = rawValue.slice(6) === 'true';
     } else if (rawValue.startsWith('file:')) {
       fields[selector] = { value: rawValue.slice(5), type: 'file' } as FormFieldValue;
     } else if (rawValue === 'true' || rawValue === 'false') {
@@ -296,7 +297,4 @@ async function main() {
   }
 }
 
-const isCli = typeof process !== 'undefined' && process.argv[1] && (
-  process.argv[1].endsWith('form-submit.ts') || process.argv[1].endsWith('form-submit')
-);
-if (isCli) main().catch(console.error);
+if (isCliMain(import.meta.url)) main().catch(console.error);

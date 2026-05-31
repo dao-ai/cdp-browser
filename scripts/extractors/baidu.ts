@@ -8,21 +8,22 @@
  * 提取搜索结果列表：标题、摘要、链接。
  * 百度对 CDP 友好，通常不需要额外 anti-detection。
  */
-import { randomDelay, CdpBrowser } from '../cdp-client';
+import { randomDelay, CdpBrowser, CdpPage } from '../cdp-client';
 import { connectBrowser } from '../cdp-manager';
 import type { ExtractorResult } from './types';
 
 export async function extract(searchUrl: string, browser?: CdpBrowser): Promise<ExtractorResult> {
   const ownBrowser = !browser;
   if (!browser) browser = await connectBrowser();
-  let page: any = null;
+  let page: CdpPage | null = null;
 
   try {
     page = await browser.newPage();
     await page.setViewport(1440, 900);
 
     await page.goto(searchUrl, { timeoutMs: 25000 });
-    await randomDelay(2000, 4000);
+    await page.waitForSelector('.result, .c-container', 3000);
+    await randomDelay(500, 1000);
 
     const title = await page.evaluate('document.title || ""');
     const currentUrl = await page.evaluate('location.href');
@@ -37,7 +38,7 @@ export async function extract(searchUrl: string, browser?: CdpBrowser): Promise<
         var out = [];
         items.forEach(function(item) {
           var titleEl = item.querySelector('h3 a, a[href*="baiducontent"]');
-          var abstractEl = item.querySelector('.c-abstract, .content-right_8Zs40, .c-span-last, [class*="abstract"]');
+          var abstractEl = item.querySelector('.c-abstract, [class*="content-right"], .c-span-last, [class*="abstract"]');
           var urlEl = item.querySelector('.c-showurl, [class*="url"]');
           if (titleEl) {
             out.push({

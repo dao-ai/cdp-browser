@@ -10,22 +10,14 @@
  * 提取主要依赖 meta 标签，内部 JSON 数据可能被加密。
  * 建议复用已登录的 Chrome profile。
  */
-import { randomDelay, CdpBrowser } from '../cdp-client';
+import { randomDelay, CdpBrowser, CdpPage } from '../cdp-client';
 import { connectBrowser } from '../cdp-manager';
-import type { ExtractorResult } from './types';
-
-function parseNum(s: string): number {
-  const clean = s.replace(/,/g, '');
-  if (clean.endsWith('万')) return parseFloat(clean) * 10000;
-  if (clean.endsWith('亿')) return parseFloat(clean) * 100000000;
-  const n = parseFloat(clean);
-  return isNaN(n) ? 0 : n;
-}
+import { parseNum, type ExtractorResult } from './types';
 
 export async function extract(shareUrl: string, browser?: CdpBrowser): Promise<ExtractorResult> {
   const ownBrowser = !browser;
   if (!browser) browser = await connectBrowser();
-  let page: any = null;
+  let page: CdpPage | null = null;
 
   try {
     page = await browser.newPage();
@@ -33,7 +25,8 @@ export async function extract(shareUrl: string, browser?: CdpBrowser): Promise<E
 
     // 导航前先设置一个高延时等待
     await page.goto(shareUrl, { timeoutMs: 45000 });
-    await randomDelay(6000, 10000);
+    await page.waitForSelector('meta[property="og:title"]', 7000);
+    await randomDelay(1000, 2000);
 
     const title = await page.evaluate('document.title || ""');
     const currentUrl = await page.evaluate('location.href');

@@ -28,3 +28,15 @@ export interface ExtractorResult {
   /** 是否需要登录才能提取（页面跳到了登录页） */
   loginRequired?: boolean;
 }
+
+/**
+ * 解析带中文后缀的数字
+ * 示例: "1.2万" → 12000, "3.5亿" → 350000000, "4,500" → 4500
+ */
+export function parseNum(s: string): number {
+  const clean = s.replace(/,/g, '');
+  if (clean.endsWith('万') || clean.endsWith('w')) return parseFloat(clean) * 10000;
+  if (clean.endsWith('亿')) return parseFloat(clean) * 100000000;
+  const n = parseFloat(clean);
+  return isNaN(n) ? 0 : n;
+}

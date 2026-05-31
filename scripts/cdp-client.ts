@@ -17,6 +17,7 @@ import path from 'path';
 import { execSync } from 'child_process';
 import { BehaviorProfile } from './behavior-profile';
 import { getScriptsForUrl, baseScripts } from './anti-detection';
+import { TIMEOUTS, RECONNECT, HUMAN_DELAY, LOGNORMAL, VIEWPORT_JITTER, MOUSE, SCROLL, POLL, BUFFER_LIMITS } from './constants';
 
 // ─── helpers ────────────────────────────────────────────────
 
@@ -33,8 +34,8 @@ export function randomDelay(min: number, max: number) {
 }
 
 /** Log-normal-ish delay: mostly fast with occasional pauses */
-export function humanDelay(fastMs = 28, slowMs = 55, burstPause = 0.08) {
-  if (Math.random() < burstPause) return randomRange(120, 350);
+export function humanDelay(fastMs = HUMAN_DELAY.FAST_MS, slowMs = HUMAN_DELAY.SLOW_MS, burstPause = HUMAN_DELAY.BURST_PROBABILITY) {
+  if (Math.random() < burstPause) return randomRange(HUMAN_DELAY.BURST_MIN, HUMAN_DELAY.BURST_MAX);
   return randomRange(fastMs, slowMs);
 }
 
@@ -43,13 +44,13 @@ export function humanDelay(fastMs = 28, slowMs = 55, burstPause = 0.08) {
  * Most values cluster near lo, with a long tail stretching toward hi.
  */
 export function lognormalDelay(lo: number, hi: number) {
-  const u1 = Math.random() || 0.001;
-  const u2 = Math.random() || 0.001;
+  const u1 = Math.random() || LOGNORMAL.EPSILON;
+  const u2 = Math.random() || LOGNORMAL.EPSILON;
   const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
   const mu = Math.log(lo);
-  const sigma = Math.log(hi / lo) / 2.5;
+  const sigma = Math.log(hi / lo) / LOGNORMAL.SIGMA_DIVISOR;
   const val = Math.exp(mu + sigma * z);
-  return Math.round(Math.min(Math.max(val, lo * 0.6), hi * 1.3));
+  return Math.round(Math.min(Math.max(val, lo * LOGNORMAL.CLAMP_MIN), hi * LOGNORMAL.CLAMP_MAX));
 }
 
 // ─── Platform-aware path conversion ────────────────────────
@@ -86,8 +87,8 @@ export class CdpConnection {
   private _closed = false;
   private _reconnecting = false;
   private _reconnectAttempts = 0;
-  private _maxReconnectAttempts = 10;
-  private _reconnectDelayMs = 1000;
+  private _maxReconnectAttempts = RECONNECT.MAX_ATTEMPTS;
+  private _reconnectDelayMs = RECONNECT.BASE_DELAY_MS;
   private _reconnectCallbacks: Set<() => void> = new Set();
   private _disconnectCallbacks: Set<() => void> = new Set();
 
@@ -138,8 +139,8 @@ export class CdpConnection {
         this._reconnecting = false;
         return;
       }
-      const delay = Math.min(this._reconnectDelayMs * Math.pow(1.5, this._reconnectAttempts - 1), 15000);
-      const jitter = Math.random() * 1000;
+      const delay = Math.min(this._reconnectDelayMs * Math.pow(RECONNECT.BACKOFF_MULTIPLIER, this._reconnectAttempts - 1), RECONNECT.BACKOFF_CAP_MS);
+      const jitter = Math.random() * RECONNECT.JITTER_MAX_MS;
       console.log(`🔄 CDP 重连中 (第 ${this._reconnectAttempts} 次, 等待 ${Math.round(delay + jitter)}ms)...`);
       setTimeout(async () => {
         try {
@@ -310,8 +311,8 @@ export class CdpBrowser {
   }
 
   /** Wait for a new popup/tab to open */
-  async waitForNewPage(timeoutMs = 15000) {
-    try { await this._conn.send('Target.setDiscoverTargets', { discover: true }); } catch {}
+  async waitForNewPage(timeoutMs = TIMEOUTS.WAIT_SELECTOR) {
+    try { await this._conn.send('Target.setDiscoverTargets', { discover: true }); } catch { console.warn('[cdp] waitForNewPage: 无法开启 target 发现'); }
     const params: any = await this._conn.once('Target.targetCreated', timeoutMs);
     const targetId = params.targetInfo?.targetId;
     if (!targetId) throw new Error('TargetCreated without targetId');
@@ -473,6 +474,9 @@ export class CdpPage {
     );
   }
 
+  /** 页面 target ID（CDP 内部标识） */
+  get targetId(): string { return this._targetId; }
+
   static async _fromTarget(conn: CdpConnection, targetId: string) {
     const { sessionId } = await conn.send('Target.attachToTarget', { targetId, flatten: false });
     return new CdpPage(conn, targetId, sessionId);
@@ -518,44 +522,43 @@ export class CdpPage {
     try {
       await this._sessionCall('Page.enable');
 
-      // 统一恢复逻辑
-      const restore = async (reason: string) => {
-        if (this._closed) {
-          console.log(`  ℹ️ 页面已主动关闭，跳过恢复 (${reason})`);
-          return;
-        }
-        console.warn(`💥 检测到页面${reason}，尝试自动恢复...`);
-        const url = this._lastUrl || 'about:blank';
-        try {
-          const { targetId } = await this._conn.send('Target.createTarget', { url });
-          const { sessionId } = await this._conn.send('Target.attachToTarget', { targetId, flatten: false });
-          this._targetId = targetId;
-          this._sessionId = sessionId;
-          this._reDeploy();
-          console.log(`  ✅ 页面已恢复: ${url.slice(0, 80)}`);
-          await this.goto(url);
-        } catch (err: any) {
-          console.error(`  ❌ 自动恢复失败: ${err.message}`);
-        }
-      };
-
       // 页面崩溃（Inspector.targetCrashed）
       this._unsubs.push(
-        this._onBrowserEvent('Inspector.targetCrashed', () => restore('崩溃')),
+        this._onBrowserEvent('Inspector.targetCrashed', () => this._autoRestorePage('崩溃')),
       );
 
       // 页面异常关闭（Target.targetDestroyed）
       const destroyHandler = (params: any) => {
-        if (params.targetId === this._targetId) restore('异常关闭/崩溃');
+        if (params.targetId === this._targetId) this._autoRestorePage('异常关闭/崩溃');
       };
       const unsubDestroy = this._conn.on('Target.targetDestroyed', destroyHandler);
       this._unsubs.push(unsubDestroy);
 
-      // 也监听 Target 关联网关事件（浏览器级别）
       try {
         await this._conn.send('Target.setDiscoverTargets', { discover: true });
-      } catch {}
-    } catch {}
+      } catch { console.warn('[cdp] 重建: 无法开启 target 发现，崩溃检测将不起作用'); }
+    } catch { console.warn('[cdp] 重建: 页面还原失败'); }
+  }
+
+  /** 自动恢复崩溃/异常关闭的页面 */
+  private async _autoRestorePage(reason: string) {
+    if (this._closed) {
+      console.log(`  ℹ️ 页面已主动关闭，跳过恢复 (${reason})`);
+      return;
+    }
+    console.warn(`💥 检测到页面${reason}，尝试自动恢复...`);
+    const url = this._lastUrl || 'about:blank';
+    try {
+      const { targetId } = await this._conn.send('Target.createTarget', { url });
+      const { sessionId } = await this._conn.send('Target.attachToTarget', { targetId, flatten: false });
+      this._targetId = targetId;
+      this._sessionId = sessionId;
+      this._reDeploy();
+      console.log(`  ✅ 页面已恢复: ${url.slice(0, 80)}`);
+      await this.goto(url);
+    } catch (err: any) {
+      console.error(`  ❌ 自动恢复失败: ${err.message}`);
+    }
   }
 
   /**
@@ -587,8 +590,9 @@ export class CdpPage {
    * Inject scripts before every page load to hide automation markers.
    * Called automatically on page creation.
    */
-  private async _deployAntiDetection() {
-    const scripts = [
+  /** 所有基础反检测脚本（纯数据，不涉及 CDP 调用） */
+  private _antiDetectionScripts(): string[] {
+    return [
       // Hide webdriver flag
       `Object.defineProperty(navigator, 'webdriver', { get: () => false })`,
       // Delete automation framework markers
@@ -628,15 +632,22 @@ export class CdpPage {
       // Remove CDP-specific frame properties
       `window.performance?.getEntriesByType?.('navigation')?.forEach?.((e) => { if (e.type !== 'navigate' && e.type !== 'reload') e.type = 'navigate' })`,
     ];
+  }
 
-    for (const script of scripts) {
-      try { await this._sessionCall('Page.addScriptToEvaluateOnNewDocument', { source: script }); } catch {}
+  /** 部署所有反检测脚本到新页面 */
+  private async _deployAntiDetection() {
+    for (const script of this._antiDetectionScripts()) {
+      try {
+        await this._sessionCall('Page.addScriptToEvaluateOnNewDocument', { source: script });
+      } catch (e) {
+        console.warn('[cdp] anti-detection 注入失败:', (e as Error)?.message || e);
+      }
     }
   }
 
   // ── internal helpers ──
 
-  private async _sessionCall(method: string, params: any = {}, timeoutMs = 30000) {
+  private async _sessionCall(method: string, params: any = {}, timeoutMs = TIMEOUTS.CDP_COMMAND) {
     if (!this._sessionId) return this._conn.send(method, params);
     const id = ++this._sessionMsgId;
     const msg = JSON.stringify({ id, method, params });
@@ -667,7 +678,7 @@ export class CdpPage {
     });
   }
 
-  private _waitForLoad(timeoutMs = 30000) {
+  private _waitForLoad(timeoutMs = TIMEOUTS.PAGE_LOAD) {
     return new Promise<void>((resolve) => {
       const timer = setTimeout(() => resolve(), timeoutMs);
       this._loadWaiters.push(() => { clearTimeout(timer); resolve(); });
@@ -682,7 +693,7 @@ export class CdpPage {
   }
 
   /** Navigate to URL */
-  async goto(url: string, { timeoutMs = 30000 } = {}) {
+  async goto(url: string, { timeoutMs = TIMEOUTS.PAGE_LOAD } = {}) {
     this._lastUrl = url;
     await this._sessionCall('Page.enable');
 
@@ -691,7 +702,7 @@ export class CdpPage {
     const baseLen = baseScripts().length;
     const extra = siteScripts.slice(baseLen);
     for (const script of extra) {
-      try { await this.addInitScript(script); } catch {}
+      try { await this.addInitScript(script); } catch { console.warn('[cdp] 站点反检测注入失败:', script.slice(0, 60)); }
     }
 
     const loadPromise = this._waitForLoad(timeoutMs);
@@ -707,7 +718,7 @@ export class CdpPage {
   }
 
   /** Reload the current page */
-  async reload(timeoutMs = 30000) {
+  async reload(timeoutMs = TIMEOUTS.PAGE_LOAD) {
     const loadPromise = this._waitForLoad(timeoutMs);
     await this._sessionCall('Page.reload');
     await loadPromise;
@@ -716,7 +727,7 @@ export class CdpPage {
   }
 
   /** Navigate back in history */
-  async goBack(timeoutMs = 30000) {
+  async goBack(timeoutMs = TIMEOUTS.PAGE_LOAD) {
     const loadPromise = this._waitForLoad(timeoutMs);
     await this.evaluate('window.history.back()');
     await loadPromise;
@@ -725,7 +736,7 @@ export class CdpPage {
   }
 
   /** Navigate forward in history */
-  async goForward(timeoutMs = 30000) {
+  async goForward(timeoutMs = TIMEOUTS.PAGE_LOAD) {
     const loadPromise = this._waitForLoad(timeoutMs);
     await this.evaluate('window.history.forward()');
     await loadPromise;
@@ -745,7 +756,7 @@ export class CdpPage {
     /** URL patterns that indicate login success (homepage, feed) */
     successPatterns?: string[];
   } = {}) {
-    const timeoutMs = opts.timeoutMs || 120_000;
+    const timeoutMs = opts.timeoutMs || TIMEOUTS.LOGIN;
     const loginPatterns = opts.loginPatterns || [
       'login', 'passport', 'signin', 'sign_in', 'sign-in',
       'accounts.google.com', 'verify', 'captcha',
@@ -767,13 +778,21 @@ export class CdpPage {
     console.log(`   当前: ${currentUrl}`);
     console.log(`   ⏳ 等待登录完成（最多 ${Math.round(timeoutMs / 1000)} 秒）...\n`);
 
-    const deadline = Date.now() + timeoutMs;
+    await this._pollLoginCompletion(Date.now() + timeoutMs, loginPatterns, successPatterns, timeoutMs);
+    return this;
+  }
 
+  /** 轮询等待手动登录完成 */
+  private async _pollLoginCompletion(
+    deadline: number,
+    loginPatterns: string[],
+    successPatterns: string[],
+    totalTimeoutMs: number
+  ) {
     while (Date.now() < deadline) {
-      await sleep(3000);
+      await sleep(TIMEOUTS.LOGIN_POLL);
       const u = await this.url().catch(() => '');
 
-      // Still on login page? Keep waiting
       if (loginPatterns.some(p => u.includes(p))) {
         if (Date.now() % 15000 < 3000) {
           console.log('  ⏳ 仍在登录页面，继续等待...');
@@ -781,23 +800,21 @@ export class CdpPage {
         continue;
       }
 
-      // If success patterns specified, check them
       if (successPatterns.length > 0) {
         if (successPatterns.some(p => u.includes(p))) {
           console.log('  ✅ 登录成功！');
-          await sleep(2000);
-          return this;
+          await sleep(TIMEOUTS.POST_LOGIN);
+          return;
         }
         continue;
       }
 
-      // URL changed away from login page
       console.log('  ✅ 登录成功！');
-      await sleep(2000);
-      return this;
+      await sleep(TIMEOUTS.POST_LOGIN);
+      return;
     }
 
-    throw new Error(`登录超时（${Math.round(timeoutMs / 1000)} 秒）`);
+    throw new Error(`登录超时（${Math.round(totalTimeoutMs / 1000)} 秒）`);
   }
 
   /**
@@ -805,8 +822,8 @@ export class CdpPage {
    * to avoid resolution fingerprinting.
    */
   async setViewport(width: number, height: number) {
-    const jw = width + randomRange(-18, 18);
-    const jh = height + randomRange(-12, 12);
+    const jw = width + randomRange(-VIEWPORT_JITTER.WIDTH, VIEWPORT_JITTER.WIDTH);
+    const jh = height + randomRange(-VIEWPORT_JITTER.HEIGHT, VIEWPORT_JITTER.HEIGHT);
     return this._sessionCall('Emulation.setDeviceMetricsOverride', { width: jw, height: jh, deviceScaleFactor: 1, mobile: false });
   }
 
@@ -880,7 +897,7 @@ export class CdpPage {
    * Wait for a CSS selector to appear in the DOM.
    * Polls every 200ms, useful for SPA pages where content loads async.
    */
-  async waitForSelector(selector: string, timeoutMs = 15000): Promise<boolean> {
+  async waitForSelector(selector: string, timeoutMs = TIMEOUTS.WAIT_SELECTOR): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const found = await this.evaluate(
@@ -923,10 +940,10 @@ export class CdpPage {
 
   /** Bezier-curve mouse movement */
   private async _humanMouseMove(fromX: number, fromY: number, toX: number, toY: number, config: any) {
-    const cpRange = config?.cpOffset ?? 60;
-    const steps = config?.steps ?? randomRange(22, 38);
-    const stepDelay = config?.stepDelayMs ?? randomRange(3, 9);
-    const jitter = config?.jitterAmplitude ?? 1.5;
+    const cpRange = config?.cpOffset ?? MOUSE.DEFAULT_CP_OFFSET;
+    const steps = config?.steps ?? randomRange(MOUSE.DEFAULT_STEPS_MIN, MOUSE.DEFAULT_STEPS_MAX);
+    const stepDelay = config?.stepDelayMs ?? randomRange(MOUSE.DEFAULT_STEP_DELAY_MIN, MOUSE.DEFAULT_STEP_DELAY_MAX);
+    const jitter = config?.jitterAmplitude ?? MOUSE.DEFAULT_JITTER;
 
     const cp1x = fromX + (toX - fromX) * randomRange(25, 45) / 100 + randomRange(-cpRange, cpRange);
     const cp1y = fromY + (toY - fromY) * randomRange(20, 40) / 100 + randomRange(-Math.round(cpRange * 0.6), Math.round(cpRange * 0.6));
@@ -1041,14 +1058,14 @@ export class CdpPage {
     this._unsubs.push(
       this._onBrowserEvent('Network.responseReceived', (params: any) => {
         this._networkEvents.push(params);
-        if (this._networkEvents.length > 200) this._networkEvents.shift();
+        if (this._networkEvents.length > BUFFER_LIMITS.NETWORK_EVENTS) this._networkEvents.shift();
       }),
     );
     this._networkEnabled = true;
   }
 
   /** Wait for a network response matching the URL pattern */
-  async waitForResponse(urlPattern: string, timeoutMs = 30000) {
+  async waitForResponse(urlPattern: string, timeoutMs = TIMEOUTS.WAIT_RESPONSE) {
     await this._ensureNetworkEnabled();
     return new Promise<any>((resolve, reject) => {
       const deadline = Date.now() + timeoutMs;
@@ -1413,67 +1430,80 @@ export class CdpPage {
     this._interceptionEnabled = true;
 
     // 监听请求拦截事件
-    this._interceptionUnsub = this._onBrowserEvent('Network.requestIntercepted', async (params: any) => {
-      if (!this._interceptionEnabled) return;
-
-      const { interceptionId, request, resourceType } = params;
-      this._interceptedCount++;
-
-      const reqInfo = {
-        url: request?.url || '',
-        type: resourceType || 'Other',
-        method: request?.method || 'GET',
-        requestId: params.requestId || '',
-      };
-
-      // 1. 自定义处理函数优先
-      if (opts.handler) {
-        try {
-          const action = opts.handler(reqInfo);
-          if (action === 'block' || action === 'abort') {
-            this._blockedCount++;
-            if (opts.verbose) {
-              console.log(`  🚫 拦截 [${reqInfo.type}] ${reqInfo.url.slice(0, 100)}`);
-            }
-            await this._continueIntercepted(interceptionId, { errorReason: 'BlockedByClient' });
-            return;
-          }
-          // 'continue' → 放行
-          await this._continueIntercepted(interceptionId);
-          return;
-        } catch { /* fall through to default */ }
-      }
-
-      // 2. blockResources 列表
-      if (opts.blockResources && opts.blockResources.includes(resourceType)) {
-        this._blockedCount++;
-        if (opts.verbose) {
-          console.log(`  🚫 拦截 [${resourceType}] ${(request?.url || '').slice(0, 100)}`);
-        }
-        await this._continueIntercepted(interceptionId, { errorReason: 'BlockedByClient' });
-        return;
-      }
-
-      // 3. blockUrls 列表
-      if (opts.blockUrls) {
-        const url = request?.url || '';
-        for (const pattern of opts.blockUrls) {
-          if (url.includes(pattern)) {
-            this._blockedCount++;
-            if (opts.verbose) {
-              console.log(`  🚫 拦截 [${resourceType}] ${url.slice(0, 100)}`);
-            }
-            await this._continueIntercepted(interceptionId, { errorReason: 'BlockedByClient' });
-            return;
-          }
-        }
-      }
-
-      // 默认放行
-      await this._continueIntercepted(interceptionId);
-    });
+    this._interceptionUnsub = this._onBrowserEvent(
+      'Network.requestIntercepted',
+      (params: any) => this._handleInterceptedRequest(params, opts)
+    );
 
     this._unsubs.push(this._interceptionUnsub);
+  }
+
+  /** 处理单次请求拦截事件 */
+  private async _handleInterceptedRequest(
+    params: any,
+    opts: {
+      handler?: (req: { url: string; type: string; method: string; requestId: string }) => 'continue' | 'block' | 'abort';
+      verbose?: boolean;
+      blockResources?: string[];
+      blockUrls?: string[];
+    }
+  ) {
+    if (!this._interceptionEnabled) return;
+
+    const { interceptionId, request, resourceType } = params;
+    this._interceptedCount++;
+
+    const reqInfo = {
+      url: request?.url || '',
+      type: resourceType || 'Other',
+      method: request?.method || 'GET',
+      requestId: params.requestId || '',
+    };
+
+    // 1. 自定义处理函数优先
+    if (opts.handler) {
+      try {
+        const action = opts.handler(reqInfo);
+        if (action === 'block' || action === 'abort') {
+          this._blockedCount++;
+          if (opts.verbose) {
+            console.log(`  🚫 拦截 [${reqInfo.type}] ${reqInfo.url.slice(0, 100)}`);
+          }
+          await this._continueIntercepted(interceptionId, { errorReason: 'BlockedByClient' });
+          return;
+        }
+        await this._continueIntercepted(interceptionId);
+        return;
+      } catch { /* fall through to default */ }
+    }
+
+    // 2. blockResources 列表
+    if (opts.blockResources?.includes(resourceType)) {
+      this._blockedCount++;
+      if (opts.verbose) {
+        console.log(`  🚫 拦截 [${resourceType}] ${(request?.url || '').slice(0, 100)}`);
+      }
+      await this._continueIntercepted(interceptionId, { errorReason: 'BlockedByClient' });
+      return;
+    }
+
+    // 3. blockUrls 列表
+    if (opts.blockUrls) {
+      const url = request?.url || '';
+      for (const pattern of opts.blockUrls) {
+        if (url.includes(pattern)) {
+          this._blockedCount++;
+          if (opts.verbose) {
+            console.log(`  🚫 拦截 [${resourceType}] ${url.slice(0, 100)}`);
+          }
+          await this._continueIntercepted(interceptionId, { errorReason: 'BlockedByClient' });
+          return;
+        }
+      }
+    }
+
+    // 默认放行
+    await this._continueIntercepted(interceptionId);
   }
 
   /**
@@ -1660,7 +1690,7 @@ export class CdpPage {
    */
   async scrollBy(dx = 0, dy = 0) {
     const absMax = Math.max(Math.abs(dx), Math.abs(dy));
-    const steps = Math.max(1, Math.ceil(absMax / randomRange(80, 180)));
+    const steps = Math.max(1, Math.ceil(absMax / randomRange(SCROLL.STEP_MIN_PX, SCROLL.STEP_MAX_PX)));
     const stepDx = Math.round(dx / steps);
     const stepDy = Math.round(dy / steps);
 
@@ -1674,7 +1704,7 @@ export class CdpPage {
         deltaX: jx,
         deltaY: jy,
       });
-      await sleep(randomRange(40, 120));
+      await sleep(randomRange(SCROLL.INTER_STEP_DELAY_MIN, SCROLL.INTER_STEP_DELAY_MAX));
     }
   }
 
@@ -1720,7 +1750,7 @@ export class CdpPage {
       await this._sessionCall('Network.clearBrowserCookies');
     } catch {
       const url = await this.url();
-      try { await this._sessionCall('Storage.clearDataForOrigin', { origin: new URL(url).origin, storageTypes: 'cookies' }); } catch {}
+      try { await this._sessionCall('Storage.clearDataForOrigin', { origin: new URL(url).origin, storageTypes: 'cookies' }); } catch { console.warn('[cdp] clearSiteData: cookie 清除失败'); }
     }
   }
 
@@ -1794,7 +1824,7 @@ export class CdpPage {
   private _consoleEnabled = false;
   private _consoleLogs: ConsoleEntry[] = [];
   private _consoleUnsubs: Function[] = [];
-  private _consoleMaxEntries = 500;
+  private _consoleMaxEntries = BUFFER_LIMITS.CONSOLE_ENTRIES;
 
   /**
    * 开启控制台日志捕获。自动监听 page 上的 console.log/warn/error 等调用。
@@ -1824,56 +1854,60 @@ export class CdpPage {
 
     this._consoleEnabled = true;
     this._consoleLogs = [];
-    this._consoleMaxEntries = opts.maxEntries ?? 500;
+    this._consoleMaxEntries = opts.maxEntries ?? BUFFER_LIMITS.CONSOLE_ENTRIES;
     const filter = opts.filter || null;
     const verbose = opts.verbose ?? false;
 
     await this._sessionCall('Runtime.enable').catch(() => {});
 
-    const handler = (params: any) => {
-      try {
-        const entry: ConsoleEntry = {
-          level: params.type || 'log',
-          text: params.args?.map((a: any) => {
-            if (a.type === 'string') return a.value ?? '';
-            if (a.type === 'number') return String(a.value ?? a.unserializableValue ?? '');
-            if (a.type === 'boolean') return String(a.value);
-            if (a.type === 'undefined') return 'undefined';
-            if (a.type === 'null') return 'null';
-            if (a.type === 'object') {
-              if (a.preview) return a.preview.description || a.preview.type || 'object';
-              return a.description || '[object]';
-            }
-            return a.description || a.value || `[${a.type}]`;
-          }).join(' '),
-          timestamp: Date.now(),
-          url: params.stackTrace?.callFrames?.[0]?.url || '',
-          line: params.stackTrace?.callFrames?.[0]?.lineNumber,
-          column: params.stackTrace?.callFrames?.[0]?.columnNumber,
-        };
-
-        // 过滤
-        if (filter && !filter.includes(entry.level as any)) return;
-
-        // 缓存
-        this._consoleLogs.push(entry);
-        while (this._consoleLogs.length > this._consoleMaxEntries) {
-          this._consoleLogs.shift();
-        }
-
-        // 实时输出
-        if (verbose) {
-          const icon = { log: '📝', warn: '⚠️', error: '❌', info: 'ℹ️', debug: '🐛' }[entry.level] || '📝';
-          console.log(`  ${icon} [${entry.level}] ${entry.text.slice(0, 200)}`);
-        }
-
-        // 回调
-        for (const cb of this._consoleCallbacks) try { cb(entry); } catch {}
-      } catch { /* ignore malformed entries */ }
-    };
-
-    this._consoleUnsubs.push(this._onBrowserEvent('Runtime.consoleAPICalled', handler));
+    this._consoleUnsubs.push(this._onBrowserEvent(
+      'Runtime.consoleAPICalled',
+      (params: any) => this._handleConsoleEntry(params, filter, verbose)
+    ));
     this._unsubs.push(this._consoleUnsubs[0]);
+  }
+
+  /** 处理单条控制台日志条目 */
+  private _handleConsoleEntry(
+    params: any,
+    filter: string[] | null,
+    verbose: boolean
+  ) {
+    try {
+      const entry: ConsoleEntry = {
+        level: params.type || 'log',
+        text: params.args?.map((a: any) => {
+          if (a.type === 'string') return a.value ?? '';
+          if (a.type === 'number') return String(a.value ?? a.unserializableValue ?? '');
+          if (a.type === 'boolean') return String(a.value);
+          if (a.type === 'undefined') return 'undefined';
+          if (a.type === 'null') return 'null';
+          if (a.type === 'object') {
+            if (a.preview) return a.preview.description || a.preview.type || 'object';
+            return a.description || '[object]';
+          }
+          return a.description || a.value || `[${a.type}]`;
+        }).join(' '),
+        timestamp: Date.now(),
+        url: params.stackTrace?.callFrames?.[0]?.url || '',
+        line: params.stackTrace?.callFrames?.[0]?.lineNumber,
+        column: params.stackTrace?.callFrames?.[0]?.columnNumber,
+      };
+
+      if (filter && !filter.includes(entry.level as 'log' | 'warn' | 'error' | 'info' | 'debug')) return;
+
+      this._consoleLogs.push(entry);
+      while (this._consoleLogs.length > this._consoleMaxEntries) {
+        this._consoleLogs.shift();
+      }
+
+      if (verbose) {
+        const icon: Record<string, string> = { log: '📝', warn: '⚠️', error: '❌', info: 'ℹ️', debug: '🐛' };
+        console.log(`  ${icon[entry.level] || '📝'} [${entry.level}] ${entry.text.slice(0, 200)}`);
+      }
+
+      for (const cb of this._consoleCallbacks) try { cb(entry); } catch {}
+    } catch { /* ignore malformed entries */ }
   }
 
   private _consoleCallbacks: Set<(entry: ConsoleEntry) => void> = new Set();
@@ -1962,47 +1996,56 @@ export class CdpPage {
     this._dialogAutoMode = mode;
     await this._sessionCall('Page.enable').catch(() => {});
 
-    this._dialogUnsub = this._onBrowserEvent('Page.javascriptDialogOpening', async (params: any) => {
-      const dialog: DialogEvent = {
-        type: params.type || 'alert',
-        message: params.message || '',
-        defaultPrompt: params.defaultPrompt || '',
-        url: params.url || '',
-        hasBrowserHandler: params.hasBrowserHandler || false,
-      };
-
-      // 通知所有回调
-      for (const cb of this._dialogCallbacks) {
-        try { cb(dialog); } catch {}
-      }
-
-      let action: 'accept' | 'dismiss' = mode;
-      let promptValue = promptText;
-
-      // 自定义回调
-      if (callback) {
-        const result = callback(dialog);
-        if (result === 'accept' || result === 'dismiss') {
-          action = result;
-        } else {
-          action = 'accept';
-          promptValue = result;
-        }
-      }
-
-      console.log(`  💬 ${dialog.type}: ${dialog.message.slice(0, 80)} → ${action === 'accept' ? '✅ 确定' : '❌ 取消'}`);
-
-      try {
-        await this._sessionCall('Page.handleJavaScriptDialog', {
-          accept: action === 'accept',
-          promptText: promptValue || dialog.defaultPrompt || '',
-        }, 5000);
-      } catch (err: any) {
-        console.warn(`  ⚠️  对话框处理失败: ${err.message}`);
-      }
-    });
+    this._dialogUnsub = this._onBrowserEvent(
+      'Page.javascriptDialogOpening',
+      (params: any) => this._handleDialog(params, mode, promptText, callback)
+    );
 
     this._unsubs.push(this._dialogUnsub);
+  }
+
+  /** 处理弹框事件 */
+  private async _handleDialog(
+    params: any,
+    mode: 'accept' | 'dismiss',
+    promptText: string,
+    callback?: (dialog: DialogEvent) => 'accept' | 'dismiss' | string
+  ) {
+    const dialog: DialogEvent = {
+      type: params.type || 'alert',
+      message: params.message || '',
+      defaultPrompt: params.defaultPrompt || '',
+      url: params.url || '',
+      hasBrowserHandler: params.hasBrowserHandler || false,
+    };
+
+    for (const cb of this._dialogCallbacks) {
+      try { cb(dialog); } catch {}
+    }
+
+    let action: 'accept' | 'dismiss' = mode;
+    let promptValue = promptText;
+
+    if (callback) {
+      const result = callback(dialog);
+      if (result === 'accept' || result === 'dismiss') {
+        action = result;
+      } else {
+        action = 'accept';
+        promptValue = result;
+      }
+    }
+
+    console.log(`  💬 ${dialog.type}: ${dialog.message.slice(0, 80)} → ${action === 'accept' ? '✅ 确定' : '❌ 取消'}`);
+
+    try {
+      await this._sessionCall('Page.handleJavaScriptDialog', {
+        accept: action === 'accept',
+        promptText: promptValue || dialog.defaultPrompt || '',
+      }, TIMEOUTS.DIALOG);
+    } catch (err: any) {
+      console.warn(`  ⚠️  对话框处理失败: ${err.message}`);
+    }
   }
 
   /**

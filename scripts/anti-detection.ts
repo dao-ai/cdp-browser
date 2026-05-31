@@ -122,40 +122,32 @@ function baiduScripts(): string[] {
   ];
 }
 
-// ─── 按域名自动选择 ───────────────────────────────────────
+// ─── 按站点选择反检测策略 ──────────────────────────────────
+// cookieKey → strategy function，域名匹配统一走 sites.ts
 
-const SITE_STRATEGIES: Record<string, () => string[]> = {
-  'douyin.com': douyinScripts,
-  'xiaohongshu.com': xiaohongshuScripts,
-  'xhslink.com': xiaohongshuScripts,
-  'taobao.com': taobaoScripts,
-  'tmall.com': taobaoScripts,
-  'jd.com': taobaoScripts,
-  'weixin.qq.com': weixinScripts,
-  'mp.weixin.qq.com': weixinScripts,
-  'bilibili.com': bilibiliScripts,
-  'b23.tv': bilibiliScripts,
-  'weibo.com': weiboScripts,
-  'm.weibo.cn': weiboScripts,
-  'zhihu.com': zhihuScripts,
-  'zhuanlan.zhihu.com': zhihuScripts,
-  'baidu.com': baiduScripts,
+import { matchSite } from './sites';
+
+const STRATEGIES: Record<string, () => string[]> = {
+  'douyin': douyinScripts,
+  'xiaohongshu': xiaohongshuScripts,
+  'taobao': taobaoScripts,
+  'jd': taobaoScripts,
+  'weixin': weixinScripts,
+  'bilibili': bilibiliScripts,
+  'weibo': weiboScripts,
+  'zhihu': zhihuScripts,
+  'baidu': baiduScripts,
 };
-
-function detectSite(url: string): string {
-  for (const [domain] of Object.entries(SITE_STRATEGIES)) {
-    if (url.includes(domain)) return domain;
-  }
-  return '';
-}
 
 /**
  * 为指定 URL 获取 anti-detection 脚本列表
  */
 export function getScriptsForUrl(url: string): string[] {
-  const site = detectSite(url);
-  const strategy = SITE_STRATEGIES[site];
-  if (strategy) return strategy();
+  const site = matchSite(url);
+  if (site) {
+    const strategy = STRATEGIES[site.cookieKey];
+    if (strategy) return strategy();
+  }
   return baseScripts();
 }
 

@@ -32,10 +32,10 @@ async function main() {
 
   // 测试页面崩溃自动恢复
   console.log('\n💥 测试页面崩溃恢复...');
-  await (page as any).enableCrashAutoRestore();
+  await page.enableCrashAutoRestore();
 
   // 模拟崩溃: 通过 CDP 关掉页面
-  const targetId = (page as any)._targetId;
+  const targetId = page.targetId;
   console.log(`   模拟关闭 target: ${targetId}`);
   try {
     await browser.connection.send('Target.closeTarget', { targetId });

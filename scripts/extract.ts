@@ -12,6 +12,7 @@
  *   npx tsx scripts/extract.ts '链接1' '链接2' --retries 3     # 批量
  *   npx tsx scripts/extract.ts --list
  */
+import { isCliMain } from './sites';
 import { extract, batchExtract, listSites } from './extractors';
 import type { TimedExtractorResult, BatchSummary } from './extractors';
 
@@ -128,7 +129,4 @@ async function main() {
   }
 }
 
-const isCli = typeof process !== 'undefined' && process.argv[1] && (
-  process.argv[1].endsWith('extract.ts') || process.argv[1].endsWith('extract')
-);
-if (isCli) main().catch(console.error);
+if (isCliMain(import.meta.url)) main().catch(console.error);

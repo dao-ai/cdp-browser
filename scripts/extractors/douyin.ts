@@ -6,18 +6,11 @@
  *   - douyin.com/video/xxx 长链接
  *   - 分享文本自动提取短链接
  */
-import { randomDelay, CdpBrowser } from '../cdp-client';
+import { randomDelay, CdpBrowser, CdpPage } from '../cdp-client';
 import { connectBrowser } from '../cdp-manager';
-import type { ExtractorResult } from './types';
+import { parseNum, type ExtractorResult } from './types';
 
 // ─── 工具 ──────────────────────────────────────────────────
-
-function parseNum(s: string): number {
-  const clean = s.replace(/,/g, '');
-  if (clean.endsWith('万')) return parseFloat(clean) * 10000;
-  if (clean.endsWith('亿')) return parseFloat(clean) * 100000000;
-  return parseFloat(clean) || 0;
-}
 
 /** 从分享文本中提取短链接 */
 function extractShortUrl(text: string): string {
@@ -43,7 +36,7 @@ export async function extract(shareUrl: string, browser?: CdpBrowser): Promise<E
   const url = extractShortUrl(shareUrl);
   const ownBrowser = !browser;
   if (!browser) browser = await connectBrowser();
-  let page: any = null;
+  let page: CdpPage | null = null;
 
   try {
     page = await browser.newPage();
@@ -51,7 +44,8 @@ export async function extract(shareUrl: string, browser?: CdpBrowser): Promise<E
 
     // 导航到视频页
     await page.goto(url, { timeoutMs: 35000 });
-    await randomDelay(7000, 10000);
+    await page.waitForSelector('meta[name="description"]', 8000);
+    await randomDelay(1000, 2000);
 
     // 用字符串表达式，不用箭头函数（防 tsx 注入 __name）
     const meta = await page.evaluate(

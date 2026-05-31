@@ -18,6 +18,7 @@
  *   # 显示所有 TS 分片（默认隐藏）
  *   npx tsx scripts/media-sniff.ts --segments 'https://example.com/live'
  */
+import { isCliMain } from './sites';
 import { connectBrowser } from './cdp-manager';
 import { MediaEntry, MediaType } from './cdp-client';
 
@@ -141,16 +142,14 @@ async function main() {
       await new Promise(r => setTimeout(r, 5000));
     }
 
-    const media = page.getDetectedMedia({ sortBy: 'size' });
-    const summary = page.getMediaSummary();
     const mediaList = page.getDetectedMedia({ sortBy: 'size' }) as MediaEntry[];
-    const summary2 = page.getMediaSummary();
+    const summary = page.getMediaSummary();
 
     // 关闭嗅探和拦截
     await page.disableMediaSniffing();
     if (fastMode) await page.blockResources([]);
 
-    formatResult(mediaList, jsonMode, summary2);
+    formatResult(mediaList, jsonMode, summary);
 
     await page.close();
     await browser.close();
@@ -164,7 +163,4 @@ async function main() {
   }
 }
 
-const isCli = typeof process !== 'undefined' && process.argv[1] && (
-  process.argv[1].endsWith('media-sniff.ts') || process.argv[1].endsWith('media-sniff')
-);
-if (isCli) main().catch(console.error);
+if (isCliMain(import.meta.url)) main().catch(console.error);

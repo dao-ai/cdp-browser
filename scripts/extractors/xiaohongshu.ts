@@ -8,25 +8,18 @@
  *
  * 核心从 meta[name="description"] 及 og 标签解析。
  */
-import { randomDelay, CdpBrowser } from '../cdp-client';
+import { randomDelay, CdpBrowser, CdpPage } from '../cdp-client';
 import { connectBrowser } from '../cdp-manager';
-import type { ExtractorResult } from './types';
+import { parseNum, type ExtractorResult } from './types';
 
 // ─── 工具 ──────────────────────────────────────────────────
-
-function parseNum(s: string): number {
-  const clean = s.replace(/,/g, '');
-  if (clean.endsWith('万')) return parseFloat(clean) * 10000;
-  if (clean.endsWith('亿')) return parseFloat(clean) * 100000000;
-  return parseFloat(clean) || 0;
-}
 
 // ─── 提取函数 ──────────────────────────────────────────────
 
 export async function extract(shareUrl: string, browser?: CdpBrowser): Promise<ExtractorResult> {
   const ownBrowser = !browser;
   if (!browser) browser = await connectBrowser();
-  let page: any = null;
+  let page: CdpPage | null = null;
 
   try {
     page = await browser.newPage();
@@ -34,7 +27,8 @@ export async function extract(shareUrl: string, browser?: CdpBrowser): Promise<E
 
     // 导航到笔记页
     await page.goto(shareUrl, { timeoutMs: 40000 });
-    await randomDelay(5000, 8000);
+    await page.waitForSelector('script#__NEXT_DATA__', 6000);
+    await randomDelay(1000, 2000);
 
     // 提取各项数据（字符串表达式，不用箭头函数）
     const meta = await page.evaluate(

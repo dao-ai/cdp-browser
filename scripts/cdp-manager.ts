@@ -1,23 +1,28 @@
 /**
  * CDP 连接管理器 — 跨平台支持（Windows / WSL / 纯Linux）
  *
- * 核心流程：
- *   1. 自动检测平台（Windows / WSL / Linux）
- *   2. 检查 Chrome CDP 端口是否可达
- *   3. 不可达 → 自动启动 Chrome（远程调试模式）
- *   4. WSL 下自动创建 netsh 端口转发
- *   5. 返回 CdpBrowser 实例
+ * 核心理念：connectBrowser() 总是自己启动 Chrome/Chromium，不依赖已有实例。
+ * 你不需要手动开 Chrome，程序全自动。
  *
- * 独立实例模式：
- *   connectBrowser({ launchNew: true, proxy: '...' })
- *   → 启动一个完全独立的 Chrome（新端口/新数据目录/新代理）
- *   → 不碰你日常用的 Chrome
+ * 流程：
+ *   1. 自动检测平台（Windows / WSL / Linux）
+ *   2. 找到 Chrome/Chromium 二进制
+ *   3. 自动启动进程（CDP 端口 & 独立数据目录）
+ *   4. WSL 下通过 netsh 端口转发 + PowerShell Start-Process
+ *   5. 等待 CDP 就绪 → 返回 CdpBrowser
+ *
+ * 编程用法:
+ *   import { connectBrowser } from './cdp-manager';
+ *   const browser = await connectBrowser();
+ *   // ... 直接用
+ *   await browser.close();
  */
 import { CdpBrowser, sleep } from './cdp-client';
+import { isCliMain } from './sites';
 import http from 'http';
 import fs from 'fs';
 import os from 'os';
-import { execSync, spawn, spawnSync } from 'child_process';
+import { spawn, spawnSync, execSync } from 'child_process';
 
 // ─── 平台检测 ──────────────────────────────────────────────
 
@@ -46,113 +51,48 @@ export function isLinux() { return detectPlatform() === 'linux'; }
 // ─── 连接选项 ────────────────────────────────────────────
 
 export interface ConnectOptions {
-  /** HTTP 代理地址，如 'http://127.0.0.1:7897' */
   proxy?: string;
-  /** 绕过代理的域名列表 */
   proxyBypassList?: string[];
-  /**
-   * 启动独立 Chrome 实例，不碰已经运行的 Chrome。
-   * 有自己的端口、数据目录、代理，互不干扰。
-   */
-  launchNew?: boolean;
-  /** 独立实例的 CDP 端口（默认 9244，WSL 自动 +1 做转发） */
-  instancePort?: number;
-  /** 独立实例的数据目录 */
+  port?: number;
   dataDir?: string;
 }
 
+interface ActiveInstance {
+  port: number;
+  dataDir: string;
+}
+
 let _connectOptions: ConnectOptions = {};
-let _activeInstance: { pid?: number; port: number; dataDir: string } | null = null;
+let _activeInstance: ActiveInstance | null = null;
 
 export function setConnectOptions(opts: ConnectOptions) { _connectOptions = opts; }
 export function getConnectOptions(): ConnectOptions { return { ..._connectOptions }; }
 
-export interface ChromeConfig {
+interface ChromeConfig {
+  chromeExe: string;
   chromeHost: string;
+  chromePort: number;
   cdpPort: number;
-  chromeListenPort: number;
-  chromeListenAddr: string;
   dataDir: string;
-  usePortForward: boolean;
-  isInstance: boolean;
   proxy?: string;
   proxyBypassList?: string[];
 }
 
-// ─── WSL Windows 命令辅助 ──────────────────────────────
+// ─── WSL 辅助 ──────────────────────────────────────────────
 
-/** WSL 下 cmd.exe 的路径 */
 const WSL_CMD = '/mnt/c/Windows/System32/cmd.exe';
 
-/**
- * WSL 下执行 Windows 命令（用 spawnSync 带 cwd 避免 UNC 路径问题）
- */
-function wslExecSync(cmd: string, args: string[], timeout = 5000): { status: number | null; stdout: string; stderr: string } {
+function wslExecSync(cmd: string, args: string[], timeout = 5000) {
   if (!isWsl() || !fs.existsSync(WSL_CMD)) {
     return { status: -1, stdout: '', stderr: 'cmd.exe not available' };
   }
   const r = spawnSync(WSL_CMD, ['/c', cmd, ...args], {
-    cwd: '/mnt/c',
-    encoding: 'utf-8',
-    timeout,
+    cwd: '/mnt/c', encoding: 'utf-8', timeout,
   });
   return { status: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
 }
 
-// ─── 配置生成 ─────────────────────────────────────────────
-
-const DEFAULT_INSTANCE_PORT = 9244;
-
-function getConfig(): ChromeConfig {
-  const opts = getConnectOptions();
-  const plat = detectPlatform();
-
-  // ── 独立实例模式 ──
-  if (opts.launchNew) {
-    const instancePort = opts.instancePort || DEFAULT_INSTANCE_PORT;
-    const cdpPort = plat === 'wsl' ? instancePort + 1 : instancePort;
-    const dataDir = opts.dataDir || (
-      plat === 'windows'
-        ? 'C:\\temp\\chrome-cdp'
-        : (plat === 'wsl')
-          ? 'C:\\temp\\chrome-cdp'
-          : (os.homedir() + '/.chrome-cdp')
-    );
-    return {
-      chromeHost: plat === 'linux' ? '127.0.0.1' : (process.env.CHROME_DEBUG_HOST || '172.20.48.1'),
-      cdpPort,
-      chromeListenPort: instancePort,
-      chromeListenAddr: '0.0.0.0',
-      dataDir,
-      usePortForward: plat === 'wsl',
-      isInstance: true,
-      proxy: opts.proxy,
-      proxyBypassList: opts.proxyBypassList,
-    };
-  }
-
-  // ── 连接已有 Chrome（默认） ──
-  if (plat === 'windows') {
-    return {
-      chromeHost: process.env.CHROME_DEBUG_HOST || '127.0.0.1',
-      cdpPort: parseInt(process.env.CHROME_DEBUG_PORT || '9222'),
-      chromeListenPort: parseInt(process.env.CHROME_DEBUG_PORT || '9222'),
-      chromeListenAddr: '127.0.0.1',
-      dataDir: process.env.CHROME_DATA_DIR || 'C:\\temp\\chrome-debug',
-      usePortForward: false,
-      isInstance: false,
-    };
-  }
-  return {
-    chromeHost: process.env.CHROME_DEBUG_HOST || '172.20.48.1',
-    cdpPort: parseInt(process.env.CHROME_DEBUG_PORT || '9223'),
-    chromeListenPort: parseInt(process.env.CHROME_PORT || '9222'),
-    chromeListenAddr: '0.0.0.0',
-    dataDir: process.env.CHROME_DATA_DIR || 'C:\\temp\\chrome-debug',
-    usePortForward: plat === 'wsl',
-    isInstance: false,
-  };
-}
+// ─── Chrome 路径查找 ──────────────────────────────────────
 
 const CHROME_PATHS_WIN = [
   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
@@ -161,29 +101,10 @@ const CHROME_PATHS_WIN = [
 ];
 
 const CHROME_PATHS_LINUX = [
-  '/usr/bin/google-chrome',
-  '/usr/bin/google-chrome-stable',
-  '/usr/bin/chromium',
-  '/usr/bin/chromium-browser',
-  '/snap/bin/chromium',
+  '/usr/bin/google-chrome', '/usr/bin/google-chrome-stable',
+  '/usr/bin/chromium', '/usr/bin/chromium-browser',
+  '/snap/bin/chromium', '/snap/bin/chromium-browser',
 ];
-
-// ─── helpers ────────────────────────────────────────────────
-
-function fetchJson(url: string) {
-  return new Promise<any>((resolve, reject) => {
-    http.get(url, res => {
-      let data = '';
-      res.on('data', (chunk: string) => { data += chunk; });
-      res.on('end', () => {
-        if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
-        try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
-      });
-    }).on('error', reject);
-  });
-}
-
-// ─── Chrome path detection ──────────────────────────────────
 
 function findChromePath(): string | null {
   if (isWindows()) {
@@ -200,7 +121,6 @@ function findChromePath(): string | null {
       if (result) return result.split('\n')[0].trim();
     } catch {}
   } else if (isWsl()) {
-    // 直接文件系统查找
     for (const p of CHROME_PATHS_WIN) {
       try {
         const expanded = p.includes('%LOCALAPPDATA%')
@@ -221,158 +141,156 @@ function findChromePath(): string | null {
   return null;
 }
 
-// ─── Chrome launch ──────────────────────────────────────────
+// ─── CDP 工具（带超时）──────────────────────────────────
 
-function buildChromeArgs(cfg: ChromeConfig): string[] {
+function fetchJson(url: string, timeoutMs = 4000): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, res => {
+      let data = '';
+      res.on('data', (chunk: Buffer | string) => { data += typeof chunk === 'string' ? chunk : chunk.toString('utf-8'); });
+      res.on('end', () => {
+        if (res.statusCode !== 200) return reject(new Error(`HTTP ${res.statusCode}`));
+        try { resolve(JSON.parse(data)); } catch (e) { reject(e); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => {
+      req.destroy();
+      reject(new Error(`超时 (${timeoutMs}ms)`));
+    });
+  });
+}
+
+// ─── 配置生成 ─────────────────────────────────────────────
+
+function getWindowsHostIp(): string {
+  try {
+    const gw = execSync('ip route | grep default | awk \'{print $3}\'', { encoding: 'utf-8', timeout: 3000 }).trim();
+    if (gw) return gw;
+  } catch {}
+  return '172.20.48.1';
+}
+
+function getConfig(): ChromeConfig {
+  const opts = _connectOptions;
+  const plat = detectPlatform();
+  const chromePort = opts.port || 9222;
+  const cdpPort = plat === 'wsl' ? chromePort + 1 : chromePort;
+  const defaultDataDir = plat === 'linux'
+    ? os.homedir() + '/.chrome-cdp'
+    : 'C:\\temp\\chrome-cdp';
+  const chromeExe = findChromePath() || '';
+  const chromeHost = plat === 'wsl' ? getWindowsHostIp() : '127.0.0.1';
+  return { chromeExe, chromeHost, chromePort, cdpPort, dataDir: opts.dataDir || defaultDataDir, proxy: opts.proxy, proxyBypassList: opts.proxyBypassList };
+}
+
+// ─── Chrome 启动 ──────────────────────────────────────────
+
+function launchChrome(cfg: ChromeConfig): void {
+  if (!cfg.chromeExe) throw new Error('找不到 Chrome/Chromium，请确保已安装 Chrome');
+
   const args = [
-    `--remote-debugging-port=${cfg.chromeListenPort}`,
-    `--remote-debugging-address=${cfg.chromeListenAddr}`,
+    `--remote-debugging-port=${cfg.chromePort}`,
     `--user-data-dir=${cfg.dataDir}`,
     '--no-first-run',
     '--no-default-browser-check',
   ];
   if (cfg.proxy) {
     args.push(`--proxy-server=${cfg.proxy}`);
-    if (cfg.proxyBypassList && cfg.proxyBypassList.length > 0) {
-      args.push(`--proxy-bypass-list=${cfg.proxyBypassList.join(';')}`);
-    }
+    if (cfg.proxyBypassList?.length) args.push(`--proxy-bypass-list=${cfg.proxyBypassList.join(';')}`);
   }
-  return args;
-}
 
-function launchChrome(cfg: ChromeConfig): void {
-  const chromeExe = findChromePath();
-  if (!chromeExe) throw new Error('找不到 Chrome/Chromium，请确保已安装');
-
-  const args = buildChromeArgs(cfg);
-
-  if (cfg.proxy) {
-    console.log(`🔧 启动 Chrome，代理: ${cfg.proxy} (端口 ${cfg.chromeListenPort})`);
-  } else {
-    console.log(`🔧 启动 Chrome (${detectPlatform()}, 端口 ${cfg.chromeListenPort})`);
-  }
-  if (cfg.isInstance) console.log(`   📁 数据目录: ${cfg.dataDir}`);
+  const label = cfg.proxy ? `代理: ${cfg.proxy} ` : '';
+  console.log(`🔧 启动 Chrome (端口 ${cfg.chromePort}) ${label}`);
+  console.log(`   📁 ${cfg.dataDir}`);
 
   if (isWindows()) {
-    const proc = spawn(chromeExe, args, { detached: true, stdio: 'ignore', windowsHide: false });
+    const proc = spawn(cfg.chromeExe, args, { detached: true, stdio: 'ignore', windowsHide: false });
     proc.unref();
   } else if (isWsl()) {
-    // WSL: 用 cmd.exe 启动（参数用数组传，cwd 设到 /mnt/c 避免 UNC 问题）
-    if (!fs.existsSync(WSL_CMD)) throw new Error('WSL 中找不到 cmd.exe');
-    // WSL 下 spawnSync 起 Chrome 再超时是可靠的方案
-    // spawn + detached 在 WSL 下对 Windows exe 可能不生效
-    spawnSync(WSL_CMD, [
-      '/c', 'start', '/B', chromeExe,
-      ...args,
-    ], {
-      cwd: '/mnt/c',
-      timeout: 1500,
-      stdio: 'ignore',
-    });
+    // WSL → PowerShell Start-Process（fire-and-forget，不阻塞）
+    const PS = '/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe';
+    if (!fs.existsSync(PS)) throw new Error('WSL 中找不到 PowerShell');
+    const psFilePath = JSON.stringify(cfg.chromeExe);
+    const psArgList = args.map(a => JSON.stringify(a)).join(',');
+    const psCmd = 'Start-Process -WindowStyle Hidden -FilePath ' + psFilePath + ' -ArgumentList ' + psArgList;
+    spawn(PS, ['-NoProfile', '-Command', psCmd], {
+      detached: true, stdio: 'ignore',
+    }).unref();
   } else {
-    const proc = spawn(chromeExe, args, { detached: true, stdio: 'ignore' });
+    const proc = spawn(cfg.chromeExe, args, { detached: true, stdio: 'ignore' });
     proc.unref();
   }
 }
 
-// ─── Port forwarding (WSL only) ─────────────────────────────
+// ─── 端口转发 (WSL) ────────────────────────────────────────
 
-function ensurePortForward(port: number, listenPort: number): boolean {
+function ensurePortForward(cfg: ChromeConfig): boolean {
   if (!isWsl()) return true;
-  // WSL 下可能没有 netsh 权限，静默处理
+  const existing = wslExecSync('netsh', ['interface', 'portproxy', 'show', 'v4tov4'], 3000);
+  if (existing.stdout?.includes(`${cfg.cdpPort}`)) return true;
+
+  console.log(`   🌉 添加端口转发 ${cfg.cdpPort} → ${cfg.chromePort}...`);
+  const r = wslExecSync('netsh', [
+    'interface', 'portproxy', 'add', 'v4tov4',
+    'listenaddress=0.0.0.0', `listenport=${cfg.cdpPort}`,
+    'connectaddress=127.0.0.1', `connectport=${cfg.chromePort}`,
+  ], 5000);
+  if (r.status === 0) { console.log('   ✅ 端口转发就绪'); return true; }
+
+  console.log('   ⚠️  需管理员权限：添加端口转发 (netsh)');
+  console.log(`      netsh interface portproxy add v4tov4 listenaddress=0.0.0.0 listenport=${cfg.cdpPort} connectaddress=127.0.0.1 connectport=${cfg.chromePort}`);
   return false;
 }
 
-function removePortForward(listenPort: number) {
-  // WSL 下不做清理
-}
+// ─── 确保 Chrome 运行 ──────────────────────────────────────
 
-// ─── Ensure Chrome ──────────────────────────────────────────
+async function ensureChrome(cfg: ChromeConfig, retries = 20): Promise<void> {
+  // 1. 已有 CDP？直接复用
+  try {
+    const info = await fetchJson(`http://${cfg.chromeHost}:${cfg.cdpPort}/json/version`, 2000);
+    if (info?.webSocketDebuggerUrl) {
+      console.log('   ✅ 已有 Chrome CDP 运行中');
+      _activeInstance = { port: cfg.cdpPort, dataDir: cfg.dataDir };
+      return;
+    }
+  } catch {}
 
-async function ensureChrome(retries = 15): Promise<boolean> {
-  const cfg = getConfig();
-  const opts = getConnectOptions();
-  const checkUrl = `http://${cfg.chromeHost}:${cfg.cdpPort}/json/version`;
-
-  // 独立实例模式：直接启动
-  if (cfg.isInstance) {
-    console.log(`🔧 启动独立 Chrome 实例 (端口 ${cfg.chromeListenPort})...`);
+  // 2. WSL: 先试直连，不行走端口转发
+  if (isWsl()) {
     try {
-      launchChrome(cfg);
-    } catch (e: any) {
-      console.log(`  ⚠️  自动启动失败: ${e.message}`);
-      return false;
-    }
-    console.log('  ⏳ 等待 Chrome 实例启动...');
-    await sleep(5000);
-
-    // 尝试多个 CDP 端点
-    const checkUrls = [
-      checkUrl,
-      `http://${cfg.chromeHost}:${cfg.chromeListenPort}/json/version`,
-      `http://127.0.0.1:${cfg.chromeListenPort}/json/version`,
-    ];
-
-    for (let i = 0; i < retries; i++) {
-      for (const url of checkUrls) {
-        try {
-          await fetchJson(url);
-          console.log(`  ✅ Chrome 实例就绪 (端口 ${cfg.chromeListenPort})`);
-          _activeInstance = { port: cfg.chromeListenPort, dataDir: cfg.dataDir };
-          return true;
-        } catch {}
-      }
-      await sleep(2000);
-    }
-    console.log('  ⚠️  等待超时');
-    return false;
+      await fetchJson(`http://${cfg.chromeHost}:${cfg.chromePort}/json/version`, 2000);
+      console.log(`   ✅ 直连 Chrome 端口 ${cfg.chromePort}`);
+      _activeInstance = { port: cfg.chromePort, dataDir: cfg.dataDir };
+      return;
+    } catch {}
+    ensurePortForward(cfg);
   }
 
-  // 默认模式：连接已有 Chrome
-  const alreadyRunning = await (async () => {
-    try { await fetchJson(checkUrl); return true; } catch { return false; }
-  })();
-
-  if (alreadyRunning) {
-    if (opts.proxy) {
-      console.log(`  ℹ️  代理已配置: ${opts.proxy}`);
-      console.log('  ⚠️  Chrome 已运行，代理需重启才能生效');
-      console.log('  💡 改用独立实例: connectBrowser({ launchNew: true, proxy: "..." })');
-    }
-    return true;
-  }
-
-  console.log(`🔧 Chrome 远程调试未连接，尝试自动启动...`);
-  try { launchChrome(cfg); } catch (e: any) {
-    console.log(`  ⚠️  自动启动失败: ${e.message}`);
-    const proxyExtra = opts.proxy ? ` --proxy-server=${opts.proxy}` : '';
-    if (isWindows()) {
-      console.log(`     "${findChromePath() || 'chrome.exe'}" --remote-debugging-port=${cfg.chromeListenPort}${proxyExtra}`);
-    } else if (isWsl()) {
-      console.log(`     "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe"`);
-      console.log(`     --remote-debugging-port=${cfg.chromeListenPort} --remote-debugging-address=0.0.0.0 --user-data-dir="${cfg.dataDir}"${proxyExtra}`);
-    } else {
-      console.log(`     google-chrome --remote-debugging-port=${cfg.chromeListenPort}${proxyExtra}`);
-    }
-    return false;
-  }
-
+  // 3. 启动 Chrome
+  launchChrome(cfg);
   console.log('  ⏳ 等待 Chrome 启动...');
-  await sleep(5000);
 
+  // 4. 轮询等待 CDP
   for (let i = 0; i < retries; i++) {
-    try { await fetchJson(checkUrl); console.log('  ✅ Chrome 就绪'); return true; }
-    catch { await sleep(2000); }
+    await sleep(2000);
+    try {
+      const info = await fetchJson(`http://${cfg.chromeHost}:${cfg.cdpPort}/json/version`, 2000);
+      if (info?.webSocketDebuggerUrl) {
+        console.log(`   ✅ Chrome 就绪 (端口 ${cfg.cdpPort})`);
+        _activeInstance = { port: cfg.cdpPort, dataDir: cfg.dataDir };
+        return;
+      }
+    } catch {}
   }
-  console.log('  ⚠️  等待超时');
-  return false;
+
+  throw new Error(`Chrome 启动超时（${cfg.cdpPort}），请检查日志`);
 }
 
 // ─── WebSocket endpoint ─────────────────────────────────────
 
-async function getWsEndpoint() {
-  const cfg = getConfig();
-  const version = await fetchJson(`http://${cfg.chromeHost}:${cfg.cdpPort}/json/version`);
+async function getWsEndpoint(cfg: ChromeConfig): Promise<string> {
+  const version = await fetchJson(`http://${cfg.chromeHost}:${cfg.cdpPort}/json/version`, 5000);
   const ws = version.webSocketDebuggerUrl;
   if (!ws) throw new Error('Chrome 未返回 webSocketDebuggerUrl');
   const url = new URL(ws);
@@ -384,78 +302,59 @@ async function getWsEndpoint() {
 // ─── Public API ─────────────────────────────────────────────
 
 /**
- * 连接 Chrome。
- *
- * 默认连你日常的 Chrome。
- * 传 `{ launchNew: true }` 启动独立实例，不碰日常的 Chrome。
+ * 连接 Chrome — 自己启动实例，不依赖已有 Chrome。
+ * 什么都不传就能用。代理走 { proxy }。
  */
 export async function connectBrowser(opts?: ConnectOptions) {
-  if (opts) setConnectOptions(opts);
-  await ensureChrome();
-  const ws = await getWsEndpoint();
+  _connectOptions = opts || {};
+  const cfg = getConfig();
+  await ensureChrome(cfg);
+  const ws = await getWsEndpoint(cfg);
   const browser = new CdpBrowser(ws);
   await browser.connect();
   return browser;
 }
 
-/**
- * 关闭独立 Chrome 实例（如果存在）。
- */
 export async function killInstance() {
-  if (!_activeInstance) {
-    console.log('  ℹ️  没有活动的独立实例');
-    return;
-  }
+  if (!_activeInstance) { console.log('  ℹ️  没有活动的实例'); return; }
   const { port } = _activeInstance;
+  const killHost = isWsl() ? getWindowsHostIp() : '127.0.0.1';
   try {
-    const wsUrl = `http://127.0.0.1:${port}/json/version`;
-    const info = await fetchJson(wsUrl).catch(() => null);
+    const info = await fetchJson(`http://${killHost}:${port}/json/version`, 3000).catch(() => null);
     if (info?.webSocketDebuggerUrl) {
       const url = new URL(info.webSocketDebuggerUrl);
+      url.hostname = killHost;
+      url.port = String(port);
       const browser = new CdpBrowser(url.toString());
       await browser.connect();
       await browser.connection.send('Browser.close');
       console.log(`  ✅ 已关闭实例 (端口 ${port})`);
+    } else {
+      throw new Error('CDP 不可用');
     }
   } catch {
-    console.log(`  ⚠️  无法自动关闭实例 (端口 ${port})，请手动关闭 Chrome 窗口`);
+    console.log(`  ⚠️  无法自动关闭实例 (端口 ${port})`);
   }
   _activeInstance = null;
 }
 
-// ─── Test connection ─────────────────────────────────────
+// ─── 测试 & 状态 ──────────────────────────────────────────
 
 export async function testConnection() {
-  const cfg = getConfig();
   try {
-    const version = await fetchJson(`http://${cfg.chromeHost}:${cfg.cdpPort}/json/version`);
-    const ws = version.webSocketDebuggerUrl;
-    if (!ws) throw new Error('No webSocketDebuggerUrl');
-    const wsUrl = new URL(ws);
-    wsUrl.hostname = cfg.chromeHost;
-    wsUrl.port = String(cfg.cdpPort);
-    const browser = new CdpBrowser(wsUrl.toString());
-    await browser.connect();
+    const browser = await connectBrowser();
     await browser.close();
-    return {
-      ok: true,
-      host: cfg.chromeHost,
-      port: cfg.cdpPort,
-      platform: detectPlatform(),
-      browser: version.Browser,
-      mode: cfg.isInstance ? 'instance' : 'existing',
-    };
+    await killInstance();
+    return { ok: true, platform: detectPlatform() };
   } catch (err: any) {
-    return { ok: false, host: cfg.chromeHost, port: cfg.cdpPort, platform: detectPlatform(), error: err.message };
+    return { ok: false, platform: detectPlatform(), error: err.message };
   }
 }
 
 export async function getConnectionInfo() {
   const cfg = getConfig();
-  return fetchJson(`http://${cfg.chromeHost}:${cfg.cdpPort}/json/version`);
+  return fetchJson(`http://${cfg.chromeHost}:${cfg.cdpPort}/json/version`, 5000);
 }
-
-export { ensureChrome };
 
 // ─── CLI ────────────────────────────────────────────────────
 
@@ -471,12 +370,12 @@ async function main() {
   if (args.includes('--status')) {
     try {
       const info = await getConnectionInfo();
-      console.log(`✅ Chrome 远程调试运行中 (${detectPlatform()})`);
+      console.log(`✅ Chrome CDP 运行中 (${detectPlatform()})`);
       console.log(`   Browser: ${info.Browser}`);
-      console.log(`   WS Endpoint: ${info.webSocketDebuggerUrl}`);
+      console.log(`   WS: ${info.webSocketDebuggerUrl}`);
       process.exit(0);
     } catch (e: any) {
-      console.log(`❌ Chrome 未连接 (${detectPlatform()}): ${e.message}`);
+      console.log(`❌ Chrome CDP 不可用: ${e.message}`);
       process.exit(1);
     }
   }
@@ -487,77 +386,54 @@ async function main() {
   }
 
   if (args.includes('--login')) {
-    const loginIdx = args.indexOf('--login') + 1;
-    const url = loginIdx < args.length ? args[loginIdx] : 'https://www.douyin.com';
-    const useInstance = args.includes('--instance');
+    const idx = args.indexOf('--login') + 1;
+    const url = idx < args.length ? args[idx] : 'https://www.douyin.com';
+    const proxyIdx = args.indexOf('--proxy');
+    const proxy = proxyIdx >= 0 ? args[proxyIdx + 1] : undefined;
     console.log(`🔐 等待手动登录: ${url}`);
-    const browser = await connectBrowser(useInstance ? { launchNew: true } : undefined);
+    const browser = await connectBrowser(proxy ? { proxy } : undefined);
     const page = await browser.newPage();
     await page.setViewport(1280, 720);
     await page.gotoWithLogin(url, { timeoutMs: 300_000 });
-    const loggedInUrl = await page.url();
-    console.log(`✅ 已登录: ${loggedInUrl}`);
+    console.log(`✅ 已登录: ${await page.url()}`);
     await page.close();
     await browser.close();
-    console.log('💾 登录态已保存');
+    await killInstance();
     process.exit(0);
   }
 
-  if (args.includes('--open-url') || args.includes('--instance')) {
-    const useInstance = args.includes('--instance');
-    const urlIndex = args.indexOf('--open-url');
-    const url = urlIndex >= 0 && urlIndex + 1 < args.length
-      ? args[urlIndex + 1]
-      : 'https://example.com';
+  if (args.includes('--open-url')) {
+    const urlIdx = args.indexOf('--open-url') + 1;
+    const url = urlIdx < args.length ? args[urlIdx] : 'https://example.com';
     const proxyIdx = args.indexOf('--proxy');
-    const proxy = proxyIdx >= 0 && proxyIdx + 1 < args.length ? args[proxyIdx + 1] : undefined;
-    const opts: ConnectOptions = useInstance ? { launchNew: true, proxy } : { proxy };
-    console.log(`🌐 ${useInstance ? '独立实例' : '默认 Chrome'} → ${url}`);
-    if (proxy) console.log(`   📡 代理: ${proxy}`);
-    const browser = await connectBrowser(opts);
+    const proxy = proxyIdx >= 0 ? args[proxyIdx + 1] : undefined;
+    console.log(`🌐 ${url}`);
+    const browser = await connectBrowser(proxy ? { proxy } : undefined);
     const page = await browser.newPage();
     await page.setViewport(1280, 720);
     await page.goto(url);
-    const title = await page.evaluate('document.title');
-    console.log(`📌 标题: ${title}`);
+    console.log(`📌 标题: ${await page.evaluate('document.title')}`);
     await sleep(3000);
     await page.close();
     await browser.close();
+    await killInstance();
+    process.exit(0);
+  }
+
+  // --instance 兼容旧用法
+  if (args.includes('--instance')) {
+    console.log('ℹ️  现在默认就是独立实例模式，--instance 已不需要');
     process.exit(0);
   }
 
   console.log(`
 用法: npx tsx scripts/cdp-manager.ts [选项]
-
-选项:
-  --test                   测试 CDP 连接
-  --status                 查看 Chrome 状态
-  --login [url]            等待手动登录
-  --open-url <url>         打开页面测试
-  --proxy <addr>           设置代理（配合 --instance 使用）
-  --instance               使用独立 Chrome 实例（不碰日常 Chrome）
-  --kill                   关闭独立实例
-
-示例:
-  # 独立实例 + 代理（完美分离方案）
-  npx tsx scripts/cdp-manager.ts --instance --proxy http://127.0.0.1:7897 --open-url https://example.com
-
-  # 独立实例登录
-  npx tsx scripts/cdp-manager.ts --instance --login https://www.douyin.com
-
-  # 关掉独立实例
-  npx tsx scripts/cdp-manager.ts --kill
-
-编程用法:
-  import { connectBrowser, killInstance } from './cdp-manager';
-
-  // 独立实例走代理，不碰日常 Chrome
-  const browser = await connectBrowser({
-    launchNew: true,
-    proxy: 'http://127.0.0.1:7897',
-  });
-  await browser.close();
-  await killInstance();
+  --test          测试 CDP 连接（自动启动 Chrome）
+  --status        查看 CDP 状态
+  --login [url]   等待手动登录
+  --open-url <u>  打开页面测试
+  --proxy <addr>  设置代理
+  --kill          关闭实例
 `);
 }
 

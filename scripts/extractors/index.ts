@@ -9,6 +9,7 @@
  *   const result = await extract('https://v.douyin.com/xxxx/');
  *   const results = await batchExtract([url1, url2], { retries: 2 });
  */
+import { matchSite, SITE_REGISTRY } from '../sites';
 import type { ExtractorResult } from './types';
 import { CdpBrowser } from '../cdp-client';
 import { connectBrowser } from '../cdp-manager';
@@ -22,6 +23,8 @@ export interface ExtractOptions {
   retries?: number;
   /** Delay between retries in ms (default: 2000) */
   retryDelayMs?: number;
+  /** Max concurrent pages (default: 3, for batchExtract) */
+  concurrency?: number;
 }
 
 /** Result with timing metadata */
@@ -65,24 +68,21 @@ import { extract as pddExtract } from './pdd';
 import { extract as zhihuExtract } from './zhihu';
 import { extract as baiduExtract } from './baidu';
 
-const REGISTRY: ExtractorRule[] = [
-  { domain: 'douyin.com', name: '抖音', extract: douyinExtract },
-  { domain: 'kuaishou.com', name: '快手', extract: kuaishouExtract },
-  { domain: 'xiaohongshu.com', name: '小红书', extract: xiaohongshuExtract },
-  { domain: 'xhslink.com', name: '小红书', extract: xiaohongshuExtract },
-  { domain: 'bilibili.com', name: 'B站', extract: bilibiliExtract },
-  { domain: 'b23.tv', name: 'B站', extract: bilibiliExtract },
-  { domain: 'weibo.com', name: '微博', extract: weiboExtract },
-  { domain: 'm.weibo.cn', name: '微博', extract: weiboExtract },
-  { domain: 'taobao.com', name: '淘宝', extract: taobaoExtract },
-  { domain: 'tmall.com', name: '天猫', extract: taobaoExtract },
-  { domain: 'jd.com', name: '京东', extract: jdExtract },
-  { domain: '3.cn', name: '京东', extract: jdExtract },
-  { domain: 'pinduoduo.com', name: '拼多多', extract: pddExtract },
-  { domain: 'yangkeduo.com', name: '拼多多', extract: pddExtract },
-  { domain: 'zhihu.com', name: '知乎', extract: zhihuExtract },
-  { domain: 'baidu.com', name: '百度', extract: baiduExtract },
-];
+// ─── 提取器映射 ────────────────────────────────────────────
+// cookieKey → extract 函数，域名匹配统一走 sites.ts
+
+const EXTRACTORS: Record<string, (url: string, browser?: CdpBrowser) => Promise<ExtractorResult>> = {
+  'douyin': douyinExtract,
+  'kuaishou': kuaishouExtract,
+  'xiaohongshu': xiaohongshuExtract,
+  'bilibili': bilibiliExtract,
+  'weibo': weiboExtract,
+  'taobao': taobaoExtract,
+  'jd': jdExtract,
+  'pdd': pddExtract,
+  'zhihu': zhihuExtract,
+  'baidu': baiduExtract,
+};
 
 // ─── 登录墙检测 ───────────────────────────────────────────
 
@@ -94,15 +94,28 @@ function isLoginWall(result: ExtractorResult): string | null {
 
   // 标题直接是"登录"
   if (t === '登录' || t === '请登录' || t === 'login' || t === 'sign in') return '需要登录';
-  // URL 跳到了登录页
+  // URL 跳到了登录页或验证码
   if (u.includes('/login') || u.includes('/passport') || u.includes('/signin') || u.includes('/auth')) return '跳转到登录页';
+  if (u.includes('captcha') || u.includes('verify') || u.includes('geetest')) return '遇到验证码';
   // 标题是泛化的域名/站名（说明没拿到具体内容）
   if (t === '小红书' || t === '拼多多商城' || t === '微博正文' || t === '抖音精选电脑版' || t === '出错啦! - bilibili.com') return '需要登录或内容不可访问';
   // 描述或标题提到"请登录"
   if (d.includes('请登录') || t.includes('请先登录') || d.includes('请先登录')) return '需要登录';
+  // 空标题/description 说明没拿到内容
+  if (!t || t === '页面不存在' || t === 'not found' || t === '404' || t.includes('找不到') || t.includes('不存在')) return '内容不存在或无法访问';
+  // 标题或描述提到验证/安全验证
+  if (t.includes('验证') || d.includes('安全验证') || d.includes('人机验证')) return '遇到安全验证';
 
   return null;
 }
+
+// ─── 注册表（从统一站点注册表展开）────────────────────────
+
+const REGISTRY: ExtractorRule[] = SITE_REGISTRY.flatMap(site => {
+  const extract = EXTRACTORS[site.cookieKey];
+  if (!extract) return [];
+  return site.domains.map(domain => ({ domain, name: site.name, extract }));
+});
 
 // ─── 自动匹配 ──────────────────────────────────────────────
 
@@ -205,71 +218,86 @@ export async function batchExtract(
 
   const retries = opts?.retries ?? 1;
   const retryDelayMs = opts?.retryDelayMs ?? 2000;
+  const concurrency = Math.min(opts?.concurrency ?? 3, urls.length);
   const batchT0 = Date.now();
-  const results: TimedExtractorResult[] = [];
+
+  // 按原始顺序占位，worker 完成后填入对应位置
+  const results: (TimedExtractorResult | null)[] = new Array(urls.length).fill(null);
   let success = 0;
   let failed = 0;
 
-  console.log(`🚀 批量提取 ${urls.length} 条 (最多重试 ${retries} 次)`);
+  // worker 共享的待处理索引队列
+  const queue = urls.map((_, i) => i);
+
+  console.log(`🚀 批量提取 ${urls.length} 条 (并发 ${concurrency}, 最多重试 ${retries} 次)`);
   const browser = await connectBrowser();
 
-  try {
-    for (let i = 0; i < urls.length; i++) {
-      const url = urls[i];
-      const rule = matchExtractor(url);
+  const processOne = async (idx: number) => {
+    const url = urls[idx];
+    const rule = matchExtractor(url);
 
-      if (!rule) {
-        console.warn(`⚠️  [${i + 1}/${urls.length}] 不支持的站点: ${url}`);
-        results.push({
-          id: '', title: '', author: '', url,
-          site: 'unknown', elapsedMs: 0, retries: 0,
-        });
-        failed++;
-        continue;
-      }
-
-      try {
-        const { result, retries: actualRetries, elapsedMs } = await retryExtract(
-          rule, url, browser, { retries, retryDelayMs }
-        );
-
-        // 登录墙检测
-        const loginIssue = isLoginWall(result);
-        if (loginIssue) {
-          result.loginRequired = true;
-          console.log(`🔐 [${i + 1}/${urls.length}] ${rule.name}: ${loginIssue} → ${result.title || url} (${elapsedMs}ms)`);
-        } else {
-          const retryTag = actualRetries > 0 ? ` (${actualRetries} 次重试)` : '';
-          console.log(`✅ [${i + 1}/${urls.length}] ${rule.name}: ${result.title || url} (${elapsedMs}ms${retryTag})`);
-        }
-        results.push({ ...result, site: rule.name, elapsedMs, retries: actualRetries });
-        success++;
-      } catch (err: any) {
-        console.warn(`❌ [${i + 1}/${urls.length}] ${rule.name} 失败 (${retries} 次重试后): ${err.message}`);
-        results.push({
-          id: '', title: err.message, author: '', url,
-          site: rule.name, elapsedMs: 0, retries: retries,
-        });
-        failed++;
-      }
+    if (!rule) {
+      console.warn(`⚠️  [${idx + 1}/${urls.length}] 不支持的站点: ${url}`);
+      results[idx] = {
+        id: '', title: '', author: '', url,
+        site: 'unknown', elapsedMs: 0, retries: 0,
+      };
+      failed++;
+      return;
     }
+
+    try {
+      const { result, retries: actualRetries, elapsedMs } = await retryExtract(
+        rule, url, browser, { retries, retryDelayMs }
+      );
+
+      const loginIssue = isLoginWall(result);
+      if (loginIssue) {
+        result.loginRequired = true;
+        console.log(`🔐 [${idx + 1}/${urls.length}] ${rule.name}: ${loginIssue} → ${result.title || url} (${elapsedMs}ms)`);
+      } else {
+        const retryTag = actualRetries > 0 ? ` (${actualRetries} 次重试)` : '';
+        console.log(`✅ [${idx + 1}/${urls.length}] ${rule.name}: ${result.title || url} (${elapsedMs}ms${retryTag})`);
+      }
+      results[idx] = { ...result, site: rule.name, elapsedMs, retries: actualRetries };
+      success++;
+    } catch (err: any) {
+      console.warn(`❌ [${idx + 1}/${urls.length}] ${rule.name} 失败 (${retries} 次重试后): ${err.message}`);
+      results[idx] = {
+        id: '', title: err.message, author: '', url,
+        site: rule.name, elapsedMs: 0, retries: retries,
+      };
+      failed++;
+    }
+  };
+
+  try {
+    // Worker 池：每个 worker 从共享队列取下一个索引处理
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (queue.length > 0) {
+        const idx = queue.shift()!;
+        await processOne(idx);
+      }
+    });
+    await Promise.all(workers);
   } finally {
     await browser.close();
   }
 
   const totalElapsedMs = Date.now() - batchT0;
+  const completedResults = results.filter((r): r is TimedExtractorResult => r !== null);
   const summary: BatchSummary = {
     total: urls.length,
     success,
     failed,
     totalElapsedMs,
-    avgElapsedMs: results.length > 0
-      ? Math.round(results.reduce((s, r) => s + r.elapsedMs, 0) / results.length)
+    avgElapsedMs: completedResults.length > 0
+      ? Math.round(completedResults.reduce((s, r) => s + r.elapsedMs, 0) / completedResults.length)
       : 0,
-    results,
+    results: completedResults,
   };
 
-  const loginCount = results.filter(r => r.loginRequired).length;
+  const loginCount = completedResults.filter(r => r.loginRequired).length;
 
   const lines = [
     `\n📊 批量提取完成`,
@@ -284,7 +312,7 @@ export async function batchExtract(
   return summary;
 }
 
-/** 获取已注册的站点列表 */
+/** 获取已注册的站点列表（所有域名 × 站点名） */
 export function listSites() {
-  return REGISTRY.map(r => ({ domain: r.domain, name: r.name }));
+  return SITE_REGISTRY.flatMap(s => s.domains.map(d => ({ domain: d, name: s.name })));
 }

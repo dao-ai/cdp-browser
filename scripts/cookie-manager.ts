@@ -15,6 +15,7 @@
  */
 import { connectBrowser } from './cdp-manager';
 import { extract, batchExtract } from './extractors';
+import { matchSite, isCliMain } from './sites';
 import fs from 'fs';
 import path from 'path';
 
@@ -68,19 +69,7 @@ async function extractWithCookies(targetUrl: string) {
 }
 
 function detectSite(url: string): string {
-  const m = url.match(/douyin\.com|kuaishou\.com|xiaohongshu\.com|bilibili\.com|weibo\.com|taobao\.com|tmall\.com|jd\.com|pinduoduo\.com|yangkeduo\.com|zhihu\.com|baidu\.com/);
-  if (m) {
-    const map: Record<string, string> = {
-      'xiaohongshu.com': 'xiaohongshu',
-      'taobao.com': 'taobao', 'tmall.com': 'taobao',
-      'jd.com': 'jd', 'pinduoduo.com': 'pdd', 'yangkeduo.com': 'pdd',
-      'bilibili.com': 'bilibili', 'weibo.com': 'weibo',
-      'zhihu.com': 'zhihu', 'baidu.com': 'baidu',
-      'douyin.com': 'douyin', 'kuaishou.com': 'kuaishou',
-    };
-    return map[m[0]] || m[0];
-  }
-  return 'unknown';
+  return matchSite(url)?.cookieKey || 'unknown';
 }
 
 const LOGIN_URLS: Record<string, string> = {
@@ -161,5 +150,4 @@ async function main() {
   process.exit(1);
 }
 
-const isCli = typeof process !== 'undefined' && process.argv[1]?.endsWith('cookie-manager.ts');
-if (isCli) main().catch(console.error);
+if (isCliMain(import.meta.url)) main().catch(console.error);

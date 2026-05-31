@@ -80,7 +80,13 @@ export class CdpPool {
     if (this._browserPromise) return this._browserPromise;
     this._log('🔧 连接浏览器...');
     this._browserPromise = connectBrowser(this._options.connectOptions);
-    const b = await this._browserPromise;
+    let b: CdpBrowser;
+    try {
+      b = await this._browserPromise;
+    } catch (err) {
+      this._browserPromise = null;  // 失败后清空，下次重试
+      throw err;
+    }
     this._browser = b;
     this._browserPromise = null;
     b.onReconnect(() => {
@@ -98,29 +104,29 @@ export class CdpPool {
   async acquire(opts: { fresh?: boolean } = {}): Promise<CdpPage> {
     if (this._closed) throw new Error('Pool is closed');
 
-    // 串行锁 — 同一时刻只有一个 acquire 在分配页面
-    const prevLock = this._acquireLock;
-    let resolveLock: () => void;
+    // 1. 确保浏览器已连接（不在锁内，Chrome 启动慢不阻塞其他 acquire）
+    const browser = await this._ensureBrowser();
+
+    // 2. 串行锁——同一时刻只有一个 acquire 在分配页面
+    let resolveLock: () => void = () => {};
+    await this._acquireLock;
     this._acquireLock = new Promise<void>(r => { resolveLock = r; });
-    await prevLock;
 
     try {
-      const browser = await this._ensureBrowser();
-
-      // 1. 找空闲页面
+      // 找空闲页面
       for (const [page, meta] of this._pages) {
         if (!meta.inUse) {
           meta.inUse = true;
           meta.lastUsed = Date.now();
           this._log(`📄 复用页面 (${this._idleCount()}/${this._pages.size})`);
           if (opts.fresh) {
-            try { await page.goto('about:blank', { timeoutMs: 5000 }); } catch {}
+            await page.goto('about:blank', { timeoutMs: 5000 }).catch(() => {});
           }
           return page;
         }
       }
 
-      // 2. 没到上限，新建
+      // 没到上限，新建
       if (this._pages.size < this._options.maxPages) {
         this._log(`📄 新建页面 (${this._pages.size}/${this._options.maxPages})`);
         const page = await browser.newPage();
@@ -128,13 +134,13 @@ export class CdpPool {
         return page;
       }
 
-      // 3. 池满，等待 release
+      // 池满，等待 release
       this._log(`⏳ 池满 (${this._pages.size}/${this._options.maxPages})，排队等待...`);
       return new Promise<CdpPage>((resolve, reject) => {
         this._waitQueue.push({ resolve, reject, fresh: opts.fresh });
       });
     } finally {
-      resolveLock!();
+      resolveLock();
     }
   }
 

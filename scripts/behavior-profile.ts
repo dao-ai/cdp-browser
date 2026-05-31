@@ -16,6 +16,103 @@
  */
 import fs from 'fs';
 
+// ─── 类型定义 ────────────────────────────────────────────
+
+/** 录制到的原始浏览器事件 */
+interface RawEvent {
+  t: number;
+  type: 'keydown' | 'keyup' | 'mousemove' | 'mousedown' | 'mouseup' | 'wheel';
+  data: {
+    key?: string;
+    code?: string;
+    ctrl?: boolean;
+    x?: number;
+    y?: number;
+    button?: number;
+    deltaX?: number;
+    deltaY?: number;
+  };
+}
+
+/** 统计分布（均值、标准差、分位数） */
+interface StatDistribution {
+  mean: number;
+  std: number;
+  p50: number;
+  p95: number;
+  sampleCount: number;
+}
+
+/** 对数正态分布 */
+interface LogNormalDistribution extends StatDistribution {
+  logMean: number;
+  logStd: number;
+}
+
+/** 打字节奏画像 */
+interface TypingProfile {
+  delayMs: LogNormalDistribution & {
+    regularMean: number;
+    regularStd: number;
+    burstPauseRate: number;
+    burstPauseMin: number;
+    burstPauseMax: number;
+  };
+}
+
+/** 鼠标移动画像 */
+interface MouseProfile {
+  speedPxPerMs: StatDistribution;
+  controlPointOffsetPx: StatDistribution;
+}
+
+/** 点击画像 */
+interface ClickProfile {
+  durationMs: StatDistribution;
+}
+
+/** 操作间停顿画像 */
+interface PauseProfile {
+  betweenActionsMs: StatDistribution;
+}
+
+/** 完整行为画像数据结构 */
+interface BehaviorData {
+  version: number;
+  createdAt: string;
+  typing: TypingProfile;
+  mouse: MouseProfile;
+  click: ClickProfile;
+  scroll: Record<string, never>;
+  pauses: PauseProfile;
+  stats: {
+    totalEvents: number;
+    keydowns: number;
+    keyups: number;
+    mouseMoves: number;
+    mousedowns: number;
+    mouseups: number;
+    scrolls: number;
+    durationMs: number;
+  };
+}
+
+/** BehaviorProfile.summary() 返回格式 */
+interface ProfileSummary {
+  duration: string;
+  events: number;
+  typing: string;
+  click: string;
+}
+
+/** getHumanizeConfig 返回格式 */
+interface HumanizeConfig {
+  steps: number;
+  cpOffset: number;
+  stepDelayMs: number;
+  jitterAmplitude: number;
+}
+
 // ─── 统计工具 ─────────────────────────────────────────
 
 function mean(arr: number[]) {
@@ -114,7 +211,7 @@ const RECORDER_SCRIPT = `
 
 // ─── 画像构建 ─────────────────────────────────────────
 
-function buildProfile(rawEvents: any[]) {
+function buildProfile(rawEvents: RawEvent[]): BehaviorData {
   const profile: any = {
     version: 1,
     createdAt: new Date().toISOString(),
@@ -153,7 +250,7 @@ function buildProfile(rawEvents: any[]) {
 
   // 鼠标移动
   const mouseMoves = rawEvents.filter(e => e.type === 'mousemove');
-  const positions = mouseMoves.map(e => ({ x: e.data.x, y: e.data.y, t: e.t }));
+  const positions = mouseMoves.map(e => ({ x: e.data.x!, y: e.data.y!, t: e.t }));
   const speeds: number[] = [];
   for (let i = 1; i < positions.length; i++) {
     const dx = positions[i].x - positions[i - 1].x;
@@ -191,12 +288,12 @@ function buildProfile(rawEvents: any[]) {
   };
 
   // 点击时长
-  const downs: any[] = [];
+  const downs: RawEvent[] = [];
   const clickDurations: number[] = [];
-  rawEvents.forEach((e: any) => {
+  rawEvents.forEach((e) => {
     if (e.type === 'mousedown') downs.push(e);
     if (e.type === 'mouseup' && downs.length) {
-      const d = downs.pop();
+      const d = downs.pop()!;
       const dur = e.t - d.t;
       if (dur > 0 && dur < 2000) clickDurations.push(dur);
     }
@@ -212,8 +309,8 @@ function buildProfile(rawEvents: any[]) {
   };
 
   // 操作间停顿
-  const actionEnds = rawEvents.filter((e: any) => ['keyup', 'mouseup', 'wheel'].includes(e.type)).map((e: any) => e.t);
-  const actionStarts = rawEvents.filter((e: any) => ['keydown', 'mousedown', 'wheel'].includes(e.type)).map((e: any) => e.t);
+  const actionEnds = rawEvents.filter((e) => ['keyup', 'mouseup', 'wheel'].includes(e.type)).map((e) => e.t);
+  const actionStarts = rawEvents.filter((e) => ['keydown', 'mousedown', 'wheel'].includes(e.type)).map((e) => e.t);
   const interActionPauses: number[] = [];
   let lastEnd = 0;
   for (const start of actionStarts) {
@@ -235,12 +332,12 @@ function buildProfile(rawEvents: any[]) {
 
   profile.stats = {
     totalEvents: rawEvents.length,
-    keydowns: rawEvents.filter((e: any) => e.type === 'keydown').length,
-    keyups: rawEvents.filter((e: any) => e.type === 'keyup').length,
+    keydowns: rawEvents.filter((e) => e.type === 'keydown').length,
+    keyups: rawEvents.filter((e) => e.type === 'keyup').length,
     mouseMoves: mouseMoves.length,
-    mousedowns: rawEvents.filter((e: any) => e.type === 'mousedown').length,
-    mouseups: rawEvents.filter((e: any) => e.type === 'mouseup').length,
-    scrolls: rawEvents.filter((e: any) => e.type === 'wheel').length,
+    mousedowns: rawEvents.filter((e) => e.type === 'mousedown').length,
+    mouseups: rawEvents.filter((e) => e.type === 'mouseup').length,
+    scrolls: rawEvents.filter((e) => e.type === 'wheel').length,
     durationMs: rawEvents.length > 1 ? Math.round(rawEvents[rawEvents.length - 1].t) : 0,
   };
 
@@ -250,20 +347,20 @@ function buildProfile(rawEvents: any[]) {
 // ─── BehaviorProfile 类 ─────────────────────────────────
 
 export class BehaviorProfile {
-  data: any;
+  data: BehaviorData | null;
 
-  constructor(data: any) {
+  constructor(data: BehaviorData | null) {
     this.data = data || null;
   }
 
   /** 从原始事件列表构建画像 */
-  static fromEvents(rawEvents: any[]) {
+  static fromEvents(rawEvents: RawEvent[]) {
     return new BehaviorProfile(buildProfile(rawEvents));
   }
 
   /** 从 JSON 文件加载 */
   static load(filePath: string) {
-    const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    const data: BehaviorData = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
     return new BehaviorProfile(data);
   }
 
@@ -277,21 +374,21 @@ export class BehaviorProfile {
 
   /** 采样一次打字间隔 (ms) */
   sampleTypingDelay() {
-    const t = this.data.typing.delayMs;
+    const t = this.data!.typing.delayMs;
     if (t.sampleCount < 5) return humanDelay();
     return clamp(Math.round(sampleLogNormal(t.logMean, t.logStd)), 10, 200);
   }
 
   /** 判断是否触发 burst pause */
   shouldBurstPause() {
-    const t = this.data.typing.delayMs;
+    const t = this.data!.typing.delayMs;
     if (t.sampleCount < 5) return Math.random() < 0.08;
     return Math.random() < (t.burstPauseRate || 0.08);
   }
 
   /** Burst pause 时长 */
   sampleBurstPause() {
-    const t = this.data.typing.delayMs;
+    const t = this.data!.typing.delayMs;
     if (t.sampleCount < 5) return 120 + Math.random() * 230;
     const min = t.burstPauseMin || 120;
     const max = t.burstPauseMax || 350;
@@ -300,21 +397,21 @@ export class BehaviorProfile {
 
   /** 采样鼠标步数 */
   sampleMouseSteps() {
-    const offset = this.data.mouse.controlPointOffsetPx;
+    const offset = this.data!.mouse.controlPointOffsetPx;
     if (offset.sampleCount < 5) return 22 + Math.floor(Math.random() * 16);
     return clamp(18 + Math.round(offset.mean / 8), 12, 60);
   }
 
   /** 采样控制点偏移 */
   sampleControlOffset() {
-    const m = this.data.mouse.controlPointOffsetPx;
+    const m = this.data!.mouse.controlPointOffsetPx;
     if (m.sampleCount < 5) return 40 + Math.random() * 80;
     return Math.round(m.p50 + (Math.random() - 0.5) * (m.p95 - m.p50));
   }
 
   /** 采样步间延迟 */
   sampleStepDelay() {
-    const speed = this.data.mouse.speedPxPerMs;
+    const speed = this.data!.mouse.speedPxPerMs;
     if (speed.sampleCount < 10) return 3 + Math.random() * 6;
     const base = 8 - Math.min(speed.mean * 2, 6);
     return clamp(Math.round(base + (Math.random() - 0.5) * 4), 2, 20);
@@ -322,20 +419,20 @@ export class BehaviorProfile {
 
   /** 采样点击时长 */
   sampleClickDuration() {
-    const c = this.data.click.durationMs;
+    const c = this.data!.click.durationMs;
     if (c.sampleCount < 2) return 80 + Math.random() * 80;
     return Math.round(c.p50 + (Math.random() - 0.5) * (c.p95 - c.p50));
   }
 
   /** 采样操作间停顿 */
   samplePause() {
-    const p = this.data.pauses.betweenActionsMs;
+    const p = this.data!.pauses.betweenActionsMs;
     if (p.sampleCount < 2) return 400 + Math.random() * 800;
     return Math.round(p.p50 + Math.random() * (p.p95 - p.p50));
   }
 
   /** 获取人类化配置（给 cdp-client 用） */
-  getHumanizeConfig() {
+  getHumanizeConfig(): HumanizeConfig {
     return {
       steps: this.sampleMouseSteps(),
       cpOffset: this.sampleControlOffset(),
@@ -345,10 +442,10 @@ export class BehaviorProfile {
   }
 
   /** 获取统计摘要 */
-  summary() {
-    const s = this.data.stats;
-    const t = this.data.typing.delayMs;
-    const c = this.data.click.durationMs;
+  summary(): ProfileSummary {
+    const s = this.data!.stats;
+    const t = this.data!.typing.delayMs;
+    const c = this.data!.click.durationMs;
     return {
       duration: `${Math.round(s.durationMs / 1000)}s`,
       events: s.totalEvents,
@@ -358,7 +455,7 @@ export class BehaviorProfile {
   }
 
   /** 在 CDP Page 上录制用户行为 */
-  static async record(page: any, durationSec: number) {
+  static async record(page: { evaluate: (script: string) => Promise<any>; setContent?: (html: string) => Promise<any> }, durationSec: number) {
     const dur = durationSec * 1000;
 
     // 注入录制脚本（用字符串表达式，不用箭头函数）
@@ -405,6 +502,8 @@ export class BehaviorProfile {
 }
 
 export { humanDelay };
+
+import { isCliMain } from './sites';
 
 // ─── CLI entry ──────────────────────────────────────────────
 

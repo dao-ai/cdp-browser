@@ -8,29 +8,22 @@
  *
  * 核心从 meta 标签和页面 JSON 数据提取。
  */
-import { randomDelay, CdpBrowser } from '../cdp-client';
+import { randomDelay, CdpBrowser, CdpPage } from '../cdp-client';
 import { connectBrowser } from '../cdp-manager';
-import type { ExtractorResult } from './types';
-
-function parseNum(s: string): number {
-  const clean = s.replace(/,/g, '');
-  if (clean.endsWith('万')) return parseFloat(clean) * 10000;
-  if (clean.endsWith('亿')) return parseFloat(clean) * 100000000;
-  const n = parseFloat(clean);
-  return isNaN(n) ? 0 : n;
-}
+import { parseNum, type ExtractorResult } from './types';
 
 export async function extract(shareUrl: string, browser?: CdpBrowser): Promise<ExtractorResult> {
   const ownBrowser = !browser;
   if (!browser) browser = await connectBrowser();
-  let page: any = null;
+  let page: CdpPage | null = null;
 
   try {
     page = await browser.newPage();
     await page.setViewport(1920, 1080);
 
     await page.goto(shareUrl, { timeoutMs: 40000 });
-    await randomDelay(5000, 9000);
+    await page.waitForSelector('script#__pageConfig', 6000);
+    await randomDelay(1000, 2000);
 
     const title = await page.evaluate('document.title || ""');
     const currentUrl = await page.evaluate('location.href');

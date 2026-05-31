@@ -5,7 +5,10 @@
  * 用法:
  *   npx tsx scripts/login-gate.ts 'https://detail.tmall.com/item.htm?id=xxx'
  */
+import * as os from 'os';
+import * as path from 'path';
 import { connectBrowser } from './cdp-manager';
+import { TIMEOUTS } from './constants';
 
 async function loginGate(targetUrl: string) {
   const browser = await connectBrowser();
@@ -37,12 +40,13 @@ async function loginGate(targetUrl: string) {
 
   // ③ 未登录：截图
   console.log('🔐 需要登录，扫码后自动继续...');
-  await page.screenshot({ path: '/home/wohugb/.openclaw/workspace/taobao-login.png' });
+  const screenshotPath = path.join(os.tmpdir(), 'cdp-login-snapshot.png');
+  await page.screenshot({ path: screenshotPath });
 
   // ④ 等登录 — 用标题而非 URL 检测，避免中间跳转误判
-  const deadline = Date.now() + 180_000;
+  const deadline = Date.now() + TIMEOUTS.LOGIN;
   while (Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, 3000));
+    await new Promise(r => setTimeout(r, TIMEOUTS.LOGIN_POLL));
     // 重新导航检测（比监控当前页 URL 更可靠）
     try {
       await page.goto(targetUrl, { timeoutMs: 15000 });
