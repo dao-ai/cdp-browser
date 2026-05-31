@@ -46,7 +46,7 @@ export function isLinux() { return detectPlatform() === 'linux'; }
 // ─── 连接选项 ────────────────────────────────────────────
 
 export interface ConnectOptions {
-  /** HTTP 代理地址，如 'http://127.0.0.1:7890' */
+  /** HTTP 代理地址，如 'http://127.0.0.1:7897' */
   proxy?: string;
   /** 绕过代理的域名列表 */
   proxyBypassList?: string[];
@@ -540,7 +540,7 @@ async function main() {
 
 示例:
   # 独立实例 + 代理（完美分离方案）
-  npx tsx scripts/cdp-manager.ts --instance --proxy http://127.0.0.1:7890 --open-url https://example.com
+  npx tsx scripts/cdp-manager.ts --instance --proxy http://127.0.0.1:7897 --open-url https://example.com
 
   # 独立实例登录
   npx tsx scripts/cdp-manager.ts --instance --login https://www.douyin.com
@@ -554,7 +554,7 @@ async function main() {
   // 独立实例走代理，不碰日常 Chrome
   const browser = await connectBrowser({
     launchNew: true,
-    proxy: 'http://127.0.0.1:7890',
+    proxy: 'http://127.0.0.1:7897',
   });
   await browser.close();
   await killInstance();

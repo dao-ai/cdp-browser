@@ -22,7 +22,7 @@ npx tsx scripts/cdp-manager.ts --test   # 测试连接
 import { connectBrowser } from './scripts/cdp-manager';
 const browser = await connectBrowser();              // 日常 Chrome
 const browser2 = await connectBrowser({              // 独立实例 + 代理
-  launchNew: true, proxy: 'http://127.0.0.1:7890',
+  launchNew: true, proxy: 'http://127.0.0.1:7897',
 });
 const page = await browser.newPage();                // 自带反检测注入
 await page.goto('https://example.com', { timeoutMs: 30000 });
@@ -158,13 +158,13 @@ await page.enableAutoDialog();         // 弹框自动点掉
 ```typescript
 const browser = await connectBrowser({
   launchNew: true,                      // 独立 Chrome，不碰日常用的
-  proxy: 'http://127.0.0.1:7890',      // 走代理
+  proxy: 'http://127.0.0.1:7897',      // 走代理
 });
 ```
 
 或者手动启动：
 ```bash
-chrome.exe --remote-debugging-port=9222 --proxy-server=http://127.0.0.1:7890
+chrome.exe --remote-debugging-port=9222 --proxy-server=http://127.0.0.1:7897
 ```
 
 ### 🧪 调试 & 测试
