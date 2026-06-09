@@ -161,7 +161,7 @@ export class AgentHistory {
       if (step.result.error) {
         lines.push(`      ⚠️ ${step.result.error.slice(0, 100)}`);
       }
-      if (step.result.output && step.result.output.length < 200) {
+      if (step.result.output && (step.result.output.length < 200 || step.action.name === 'extract_site_content')) {
         lines.push(`      📄 ${step.result.output}`);
       }
     }

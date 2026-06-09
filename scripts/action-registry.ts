@@ -535,7 +535,7 @@ export class ActionRegistry {
 
     this.register({
       name: 'extract_site_content',
-      description: '提取当前页面的结构化内容（标题、作者、描述、点赞数、评论数等）。有效站点：B站、知乎、百度、京东等自动匹配。提取结果以 JSON 形式返回。',
+      description: '提取当前页面的结构化内容。自动检测页面类型（列表页/详情页），提取标题、链接、作者、互动数据等。支持 B站/知乎/小红书/抖音/百度/京东 等站点。结果以 JSON 返回。',
       parameters: [
         { name: 'url', type: 'string', description: '要提取的URL（可选，默认当前页面URL）', required: false },
       ],
@@ -543,52 +543,190 @@ export class ActionRegistry {
       handler: async (page, args) => {
         const targetUrl = args.url || await page.evaluate('location.href');
         const hostname = new URL(targetUrl).hostname.replace(/^www\./, '');
-        
-        // 用 evaluate 提取页面关键结构化数据（兼容所有站点）
+
         const extracted = await page.evaluate(`(function() {
+          const host = location.hostname;
           const data = {
             url: location.href,
-            hostname: location.hostname,
+            hostname: host,
             title: document.title || '',
+            pageType: 'unknown',
             description: '',
-            keywords: '',
-            ogTitle: '',
-            ogDescription: '',
             ogImage: '',
             author: '',
-            publishDate: '',
-            content: (document.body?.innerText || '').slice(0, 3000),
+            publishedDate: '',
+            content: (document.body?.innerText || '').slice(0, 2000),
+            items: [],
+            stats: {},
           };
+
+          // ── Meta 信息 ──
           const meta = document.querySelectorAll('meta');
           for (const m of meta) {
-            const name = (m.getAttribute('name') || m.getAttribute('property') || '').toLowerCase();
-            const content = m.getAttribute('content') || '';
-            if (name === 'description') data.description = content;
-            if (name === 'keywords') data.keywords = content;
-            if (name === 'author' || name === 'article:author') data.author = content;
-            if (name === 'article:published_time') data.publishDate = content.slice(0, 10);
-            if (name === 'og:title') data.ogTitle = content;
-            if (name === 'og:description') data.ogDescription = content;
-            if (name === 'og:image') data.ogImage = content;
+            const n = (m.getAttribute('name') || m.getAttribute('property') || '').toLowerCase();
+            const c = m.getAttribute('content') || '';
+            if (n === 'description') data.description = c;
+            if (n === 'author' || n === 'article:author') data.author = c;
+            if (n === 'article:published_time') data.publishedDate = c.slice(0, 10);
+            if (n === 'og:image') data.ogImage = c;
           }
-          // 站点专用逻辑：提取互动数据
-          if (location.hostname.includes('bilibili')) {
-            const v = document.querySelector('.video-data .view, .dm, .video-info-detail');
-            // 赞
-            const like = document.querySelector('.video-like-info, .like span, .video-toolbar-left .like');
-            if (like) data.likes = like.textContent?.trim();
-            // 评论
-            const cmt = document.querySelector('.comment, .reply span');
-            if (cmt) data.comments = cmt.textContent?.trim();
+
+          // ── 辅助函数 ──
+          function getText(el) { return (el?.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 200); }
+          function getLink(el) {
+            const a = el.tagName === 'A' ? el : el.querySelector('a');
+            if (!a) return '';
+            return a.href || '';
           }
-          if (location.hostname.includes('zhihu')) {
-            const vote = document.querySelector('.VoteButton--up, .Button.VoteButton');
-            if (vote) data.likes = vote.textContent?.trim();
+          function getImg(el) {
+            const img = el.tagName === 'IMG' ? el : el.querySelector('img');
+            const src = img?.src || img?.getAttribute('data-src') || img?.getAttribute('data-original') || '';
+            return src.startsWith('http') ? src : '';
           }
+
+          // ── 站点专用: 列表页选择器 ──
+          const SITE_LIST_SELECTORS = {
+            'bilibili.com': ['.bili-video-card', '.video-card', '.card-pc', '.video-list-item', '.rank-item'],
+            'zhihu.com': ['.HotItem', '.List-item', '.ContentItem', '.TopstoryItem'],
+            'xiaohongshu.com': ['.note-item', '.feeds-page .note-item', '.explore-card'],
+            'douyin.com': ['.video-card', '.feed-item', '.aweme-item'],
+            'taobao.com': ['.J_ItemList .item', '.grid-item', '.card-item'],
+            'jd.com': ['.gl-item', '.goods-list-v2 .item', '.goods-item'],
+          };
+
+          // ── 通用卡片选择器 ──
+          const GENERIC_CARD_SELECTORS = [
+            'article', '[class*=card]', '[class*=item]', 'li[class]',
+            '.list-item', '.feed-item', '.result-item',
+          ];
+
+          // ── 获取站点专用选择器 ──
+          function getSelectors() {
+            for (const [domain, selectors] of Object.entries(SITE_LIST_SELECTORS)) {
+              if (host.includes(domain)) return selectors;
+            }
+            return GENERIC_CARD_SELECTORS;
+          }
+
+          // ── 尝试提取列表项 ──
+          function tryExtractItems(selectors) {
+            let bestItems = [];
+            let bestLen = 0;
+
+            for (const sel of selectors) {
+              try {
+                const els = document.querySelectorAll(sel);
+                if (els.length >= 3 && els.length > bestLen) {
+                  const items = [];
+                  for (const el of els) {
+                    try {
+                    // 跳过不可见的、太小的
+                    const rect = el.getBoundingClientRect();
+                    if (rect.width < 50 || rect.height < 20) continue;
+                    const link = getLink(el);
+                    // 注意: querySelector 按 DOM 顺序返回，a 标签常包图片无文本，不应排前面
+                    let title = getText(el.querySelector('.video-name,.bili-video-card__info--tit,h1,h2,h3,h4,.title,.name,.headline,[class*=title],[class*=headline],a[title]'));
+                    // B站等站点标题在 a 标签的 title 属性中，不在 textContent
+                    if (!title) {
+                      const titleA = el.querySelector('a[title]');
+                      if (titleA) title = (titleA.getAttribute('title') || '').trim().slice(0, 200);
+                    }
+                    // 最终 fallback: 卡片的 aria-label
+                    if (!title) title = (el.getAttribute('aria-label') || el.getAttribute('data-title') || '').trim().slice(0, 200);
+                    const img = getImg(el);
+                    const desc = getText(el.querySelector('.desc,.description,.summary,.intro,.abstract,p,.bili-video-card__info--desc'));
+                    const tag = getText(el.querySelector('.tag,.label,.category,.type,.badge,.bili-video-card__info--duration'));
+                    // 互动数据
+                    const like = getText(el.querySelector('[class*=like],[class*=vote],[class*=up]'));
+                    let view = getText(el.querySelector('[class*=view],[class*=play],[class*=watch]'));
+                    // B站播放量在 .bili-video-card__stats 里
+                    if (!view) {
+                      const biliStats = el.querySelector('.bili-video-card__stats');
+                      if (biliStats) {
+                        const biliView = biliStats.querySelector('[class*=play],[class*=view],span');
+                        if (biliView) view = getText(biliView);
+                      }
+                    }
+                    if (title || link) {
+                      items.push({ title, link, img, desc, tag, like, view });
+                      if (items.length >= 40) break; // 最多 40 条
+                    }
+                    } catch (e) {} // 单卡容错
+                  }
+                  if (items.length >= bestLen) {
+                    bestItems = items;
+                    bestLen = items.length;
+                  }
+                }
+              } catch (e) {}
+            }
+            return bestItems;
+          }
+
+          // ── 主提取流程 ──
+          const selectors = getSelectors();
+          const items = tryExtractItems(selectors);
+
+          if (items.length >= 3) {
+            data.pageType = 'list';
+            data.items = items.slice(0, 30);
+            data.stats = { itemCount: items.length, selector: selectors[0] };
+          } else {
+            // 可能是详情页，尝试提取单页元数据
+            data.pageType = 'detail';
+
+            // 站点专用互动数据
+            if (host.includes('bilibili')) {
+              const like = document.querySelector('.video-like-info,.like span,.video-toolbar-left .like,[class*=like] span');
+              const coin = document.querySelector('.coin-info span,.coin span');
+              const fav = document.querySelector('.collect-info span,.collect span');
+              const dm = document.querySelector('.dm,.danmu,.danmaku');
+              if (like) data.stats.likes = like.textContent?.trim();
+              if (coin) data.stats.coins = coin.textContent?.trim();
+              if (fav) data.stats.favorites = fav.textContent?.trim();
+              if (dm) data.stats.danmaku = dm.textContent?.trim();
+            }
+            if (host.includes('zhihu')) {
+              const vote = document.querySelector('.VoteButton--up,.Button.VoteButton,[class*=VoteButton]');
+              const cmt = document.querySelector('.CommentsCount,[class*=comments]');
+              if (vote) data.stats.likes = vote.textContent?.trim();
+              if (cmt) data.stats.comments = cmt.textContent?.trim();
+            }
+            if (host.includes('xiaohongshu')) {
+              const like = document.querySelector('.like-wrapper .count,.like-btn .count,[class*=likes]');
+              const coll = document.querySelector('.collect-wrapper .count,.collect-btn .count');
+              if (like) data.stats.likes = like.textContent?.trim();
+              if (coll) data.stats.favorites = coll.textContent?.trim();
+            }
+          }
+
           return data;
         })()`);
-        
-        return { success: true, message: '已提取页面内容', data: extracted };
+
+        // 把提取结果格式化为紧凑文本，写入 message 供 Agent 历史直接展示
+        let summary = `${extracted.pageType === 'list' ? '📋' : '📄'} ${extracted.title}`;
+        if (extracted.description) summary += ` | ${extracted.description.slice(0, 80)}`;
+
+        if (extracted.pageType === 'list' && extracted.items && extracted.items.length > 0) {
+          const limit = Math.min(extracted.items.length, 15);
+          summary += `\n共 ${extracted.items.length} 条，显示前 ${limit}:`;
+          for (let i = 0; i < limit; i++) {
+            const it = extracted.items[i];
+            const stats = [it.view, it.like].filter(Boolean).join(' ');
+            summary += `\n${i + 1}. ${it.title || '(无标题)'}${stats ? ' [' + stats + ']' : ''}${it.link ? ' ' + it.link : ''}`;
+          }
+        } else if (extracted.pageType === 'detail') {
+          const st = extracted.stats || {};
+          const statParts = [];
+          if (st.likes) statParts.push(`👍${st.likes}`);
+          if (st.comments) statParts.push(`💬${st.comments}`);
+          if (st.coins) statParts.push(`🪙${st.coins}`);
+          if (st.favorites) statParts.push(`⭐${st.favorites}`);
+          if (st.danmaku) statParts.push(`📺${st.danmaku}`);
+          if (statParts.length > 0) summary += `\n互动: ${statParts.join(' ')}`;
+        }
+
+        return { success: true, message: summary, data: extracted };
       },
     });
 

@@ -676,9 +676,19 @@ export class BrowserAgent {
       Object.assign(args, actionArgs);
     }
 
+    // 提取多动作数组 (LLM 输出的 actions 字段)
+    let rawActions: AgentActionItem[] | undefined;
+    if (Array.isArray(parsed.actions) && parsed.actions.length > 0) {
+      rawActions = parsed.actions.map((a: any) => ({
+        name: a.name || 'get_dom_state',
+        args: a.args || {},
+      }));
+    }
+
     return {
       reasoning: parsed.reasoning || parsed.reason || '',
       action: { name: actionName, args },
+      actions: rawActions,
       nextGoal: parsed.nextGoal || parsed.next_goal || '',
       taskComplete: !!parsed.taskComplete || !!parsed.task_complete || !!parsed.done,
       planUpdate: parsed.planUpdate || parsed.plan_update || undefined,

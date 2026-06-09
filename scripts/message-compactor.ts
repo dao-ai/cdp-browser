@@ -330,7 +330,7 @@ ${stepTexts}
 
       if (!step.result.success && step.result.error) {
         lines.push(`      ⚠️ ${step.result.error.slice(0, 100)}`);
-      } else if (step.result.output && step.result.output.length < 200 && step.action.name !== 'get_page_text') {
+      } else if (step.result.output && step.result.output.length < 200 && step.action.name !== 'get_page_text' && step.action.name !== 'extract_site_content') {
         lines.push(`      → ${step.result.output}`);
       }
     }
