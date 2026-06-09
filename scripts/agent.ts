@@ -138,6 +138,9 @@ export class BrowserAgent {
   private _planner: PlanningSystem | null = null;
   private _loopDetector: LoopDetector | null = null;
   private _compactor: MessageCompactor | null = null;
+  private _dataExtracted = false;
+  private _staleObserveCount = 0;
+  private _lastPageUrl = '';
 
   constructor(page: CdpPage, config?: AgentConfig) {
     this._page = page;
@@ -229,9 +232,12 @@ export class BrowserAgent {
     let consecutiveFailures = 0;
     let llmCallCount = 0;
 
-    // 新任务重置规划 + 循环检测
+    // 新任务重置规划 + 循环检测 + 停滞计数器
     if (this._planner) this._planner.reset();
     if (this._loopDetector) this._loopDetector.reset();
+    this._dataExtracted = false;
+    this._staleObserveCount = 0;
+    this._lastPageUrl = '';
 
     for (let step = 1; step <= this._config.maxSteps; step++) {
       this._log(`\n─── 步骤 ${step}/${this._config.maxSteps} ───`);
@@ -299,6 +305,32 @@ export class BrowserAgent {
       llmCallCount++;
       const decision = await this._getDecision(task, state, registry, opts, extraNudge);
 
+      // 2f-bis. 停滞检测：连续观察类动作 + 无进展 → 强制终止
+      const observeActions = new Set(['scroll_down', 'scroll_up', 'scroll_to_bottom',
+        'get_dom_state', 'get_page_text', 'wait', 'read_text']);
+      const firstActionName = (decision.actions && decision.actions.length > 0
+        ? decision.actions[0].name : decision.action.name);
+      const currentUrl = state.url || '';
+
+      if (observeActions.has(firstActionName) && currentUrl === this._lastPageUrl) {
+        this._staleObserveCount++;
+      } else if (!observeActions.has(firstActionName)) {
+        this._staleObserveCount = 0;
+      }
+      this._lastPageUrl = currentUrl;
+
+      // 数据已提取 + 停滞 ≥3 步 → 强制 task_done
+      if (this._dataExtracted && this._staleObserveCount >= 3) {
+        this._log('  🛑 停滞检测: 已提取数据但连续 ' + this._staleObserveCount + ' 步无进展，强制终止');
+        decision.action = {
+          name: 'task_done',
+          args: { result: '已获取页面数据（自动终止：连续观察 ' + this._staleObserveCount + ' 步无进展）' },
+        };
+        decision.actions = undefined;
+        decision.taskComplete = true;
+        decision.reasoning = '停滞自动终止';
+      }
+
       // 2g. 执行动作（支持多动作队列 + 自动重试）
       const actionStartTime = Date.now();
       const actionsToExecute = decision.actions && decision.actions.length > 0
@@ -348,6 +380,17 @@ export class BrowserAgent {
         taskComplete: decision.taskComplete,
         durationMs: actionDurationMs,
       });
+
+      // 2h-bis. 检测提取成功 — 追踪数据获取
+      const msg = actionResult.message || '';
+      if (firstExecuted.name === 'extract_site_content' && /共\s*\d+\s*条/.test(msg)) {
+        this._dataExtracted = true;
+        this._log('  📌 检测到数据提取成功，标记 _dataExtracted');
+      }
+      if (firstExecuted.name === 'get_page_text' && actionResult.success) {
+        this._dataExtracted = true;
+        this._log('  📌 检测到页面文本获取成功，标记 _dataExtracted');
+      }
 
       // 2i. 应用 LLM 的计划更新 + 记录成功/失败
       if (this._planner) {
@@ -606,6 +649,22 @@ export class BrowserAgent {
       '动作将按顺序执行。像 navigate 和 task_done 这样的动作会中断后续动作（页面状态已变），' +
       '所以把它们放在队列末尾。也可以只输出单个 `action`（向后兼容）。' +
       '支持 `planUpdate`（字符串数组）创建/更新计划，`currentPlanItem`（数字）指示当前计划步骤。';
+
+    // 数据已提取的强提示 — 把最新提取结果直接贴给 LLM
+    if (this._dataExtracted) {
+      if (nudgeMsg) nudgeMsg += '\n\n';
+      // 找到最近一次 extract_site_content 或 get_page_text 的输出
+      const lastExtract = [...this._history.steps].reverse()
+        .find(s => s.action.name === 'extract_site_content' || s.action.name === 'get_page_text');
+      let extractedSummary = '';
+      if (lastExtract?.result.output) {
+        extractedSummary = '\n📋 以下是之前提取到的页面数据，请直接用它汇报给用户：\n' + lastExtract.result.output;
+      }
+      nudgeMsg += '⚠️ [强制提示] 你已经成功提取了页面数据（见上方历史记录）。' +
+        extractedSummary +
+        '\n\n现在不需要继续滚动、重新提取或获取 DOM 状态。' +
+        '请立即调用 task_done，直接把提取到的内容整理后汇报给用户。';
+    }
 
     const userContent = user + planText + nudgeMsg;
     const messages: LlmMessage[] = [

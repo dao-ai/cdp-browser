@@ -128,6 +128,10 @@ export class AgentPrompts {
       lines.push('3. 如果点击后页面发生变化，先观察新状态');
       lines.push('4. 如果重复同一动作 3 次仍未成功，尝试换一种方法');
       lines.push('5. 任务完成时设置 taskComplete: true');
+      lines.push('6. extract_site_content 或 get_page_text 成功获取数据后，' +
+        '立即调用 task_done 汇报结果。不要继续滚动或重复提取。');
+      lines.push('7. 如果页面状态与上一步相同且你已读过内容，' +
+        '说明操作没有产生新信息，应立即 task_done 而不是继续无效操作。');
       lines.push('');
       lines.push('💡 部分动作只在特定站点可用（如 google_search 仅在 Google），其他站点自动隐藏。');
       if (opts.constraints?.length) {
@@ -148,6 +152,10 @@ export class AgentPrompts {
       lines.push('3. Wait for page changes before deciding next action');
       lines.push('4. If same action fails 3 times, try a different approach');
       lines.push('5. Set taskComplete: true when done');
+      lines.push('6. Once extract_site_content or get_page_text returns data, ' +
+        'call task_done immediately. Do NOT keep scrolling or re-extracting.');
+      lines.push('7. If the page state is identical to the previous step and you already read the content, ' +
+        'stop wasting steps — call task_done now.');
       lines.push('');
       lines.push('💡 Some actions are domain-filtered (e.g. google_search only shows on Google).');
     }
