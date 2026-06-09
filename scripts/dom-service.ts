@@ -281,7 +281,7 @@ export class DomService {
             ariaLabel: el.getAttribute('aria-label') || el.title || undefined,
             inputType: inputType,
             placeholder: el.getAttribute('placeholder') || undefined,
-            value: el.value !== undefined && el.value !== '' ? el.value.slice(0, 40) : undefined,
+            value: el.value !== undefined && el.value !== '' && typeof el.value === 'string' ? el.value.slice(0, 40) : undefined,
             disabled: el.disabled || undefined,
           });
         }

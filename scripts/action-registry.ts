@@ -505,18 +505,18 @@ export class ActionRegistry {
 
     this.register({
       name: 'new_tab',
-      description: '打开新标签页并导航到指定 URL。多个标签页可以并行操作。',
+      description: '导航到指定 URL（会改变当前页面）。如果需要在多个页面间切换，使用此动作打开新页面。',
       parameters: [
-        { name: 'url', type: 'string', description: '要打开的新标签页 URL', required: true },
+        { name: 'url', type: 'string', description: '要导航到的 URL', required: true },
       ],
       priority: 95,
       terminatesSequence: true,
       handler: async (page, args) => {
         const url = args.url;
         if (!url) return { success: false, error: '缺少 url 参数' };
-        // 通过 CDP Target.createTarget 创建新标签页
-        // 这里通知 Agent 打开新标签页（handler 由 Agent 处理）
-        return { success: true, message: '新标签页指令已发出: ' + url, data: { url } };
+        await page.goto(url, { timeoutMs: 30000 });
+        await new Promise(r => setTimeout(r, 1500));
+        return { success: true, message: '已导航到: ' + url, data: { url }, changedState: true };
       },
     });
 

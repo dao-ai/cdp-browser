@@ -624,7 +624,20 @@ export class BrowserAgent {
       this._log(`  📸 附带截图（${Math.round(state.screenshot.length / 1024)}KB）给 LLM`);
     }
 
-    const response = await this._llm.chat(messages, chatOpts);
+    // 多模态 fallback: 部分模型（如 deepseek-chat）不支持 image_url，
+    // 遇到 400 deserialize 错误时自动退化为纯文本调用
+    let response: any;
+    try {
+      response = await this._llm.chat(messages, chatOpts);
+    } catch (err: any) {
+      if (chatOpts.images && (err.message.includes('image_url') || err.message.includes('deserialize'))) {
+        this._log('  ⚠️ 模型不支持多模态截图，降级为纯文本');
+        delete chatOpts.images;
+        response = await this._llm.chat(messages, chatOpts);
+      } else {
+        throw err;
+      }
+    }
 
     this._log(`  🤔 LLM 回复: ${response.content.slice(0, 200)}...`);
 
