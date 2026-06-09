@@ -119,3 +119,156 @@ export {
   POLL,
   BUFFER_LIMITS,
 } from './constants';
+
+// ─── AI Agent ──────────────────────────────────────────────
+
+export {
+  BrowserAgent,
+  runAgent,
+  runAgentMultiPage,
+} from './agent';
+
+export type {
+  AgentConfig,
+  AgentRunOptions,
+  AgentStepDecision,
+  AgentResult,
+} from './agent';
+
+// ─── LLM Client ────────────────────────────────────────────
+
+export {
+  LlmClient,
+  createLlmClient,
+} from './llm-client';
+
+export type {
+  LlmMessage,
+  LlmClientConfig,
+  LlmChatOptions,
+  LlmChatResponse,
+} from './llm-client';
+
+// ─── DOM → LLM 接口 ───────────────────────────────────────
+
+export {
+  DomService,
+} from './dom-service';
+
+export type {
+  DomElement,
+  DomState,
+  DomServiceOptions,
+} from './dom-service';
+
+// ─── Action Registry ───────────────────────────────────────
+
+export {
+  ActionRegistry,
+  createActionRegistry,
+} from './action-registry';
+
+export type {
+  ActionParameter,
+  ActionDefinition,
+  ActionEntry,
+  ActionResult,
+} from './action-registry';
+
+// ─── Agent History ─────────────────────────────────────────
+
+export {
+  AgentHistory,
+  MiniAgentHistory,
+} from './agent-history';
+
+export type {
+  AgentAction,
+  AgentStepResult,
+  AgentStep,
+} from './agent-history';
+
+// ─── Agent Prompts ─────────────────────────────────────────
+
+export {
+  AgentPrompts,
+} from './agent-prompts';
+
+export type {
+  AgentPromptOptions,
+} from './agent-prompts';
+
+// ─── Message Compaction ────────────────────────────────────
+
+export {
+  MessageCompactor,
+} from './message-compactor';
+
+export type {
+  CompactionSettings,
+  CompactionContext,
+} from './message-compactor';
+
+// ─── Loop Detection ────────────────────────────────────────
+
+export {
+  LoopDetector,
+  createPageFingerprint,
+  fingerprintsEqual,
+} from './loop-detector';
+
+export type {
+  LoopDetectorConfig,
+  PageFingerprint,
+} from './loop-detector';
+
+// ─── Planning System ───────────────────────────────────────
+
+export {
+  PlanningSystem,
+} from './planning-system';
+
+export type {
+  PlanningConfig,
+  PlanItem,
+  PlanItemStatus,
+  PlanSnapshot,
+} from './planning-system';
+
+// ─── JSON Extractor ────────────────────────────────────────
+
+export {
+  extractJson,
+  extractValidatedJson,
+  isValidAgentDecision,
+  hasFields,
+  buildAgentOutputSchema,
+  buildAgentOutputJsonSchema,
+} from './json-extractor';
+
+export type {
+  JsonExtractOptions,
+  JsonExtractResult,
+} from './json-extractor';
+
+// ─── Watchdog System ───────────────────────────────────────
+
+export {
+  EventBus,
+  BaseWatchdog,
+  PopupsWatchdog,
+  CrashWatchdog,
+  CaptchaWatchdog,
+  createDefaultWatchdogs,
+} from './watchdog';
+
+export type {
+  WatchdogEventMap,
+  WatchdogEventName,
+  WatchdogOptions,
+  PopupsWatchdogOptions,
+  CrashWatchdogOptions,
+  CaptchaWatchdogOptions,
+  CaptchaDetectResult,
+  WatchdogSet,
+} from './watchdog';

@@ -387,13 +387,26 @@ async function main() {
 
   if (args.includes('--login')) {
     const idx = args.indexOf('--login') + 1;
-    const url = idx < args.length ? args[idx] : 'https://www.douyin.com';
+    // 找到 --login 后的第一个非 -- 参数作为 URL
+    let url = 'https://www.douyin.com';
+    for (let i = idx; i < args.length; i++) {
+      if (!args[i].startsWith('--')) { url = args[i]; break; }
+    }
     const proxyIdx = args.indexOf('--proxy');
     const proxy = proxyIdx >= 0 ? args[proxyIdx + 1] : undefined;
+    const clearCookies = args.includes('--clear-cookies');
     console.log(`🔐 等待手动登录: ${url}`);
     const browser = await connectBrowser(proxy ? { proxy } : undefined);
     const page = await browser.newPage();
     await page.setViewport(1280, 720);
+
+    // 测试用：清空 cookie（强制进入未登录态）
+    if (clearCookies) {
+      const before = await page.getCookies().catch(() => []);
+      await page.clearCookies().catch(() => {});
+      console.log(`🧹 已清除 ${before.length} 个 cookie（测试模式）`);
+    }
+
     await page.gotoWithLogin(url, { timeoutMs: 300_000 });
     console.log(`✅ 已登录: ${await page.url()}`);
     await page.close();
@@ -431,6 +444,7 @@ async function main() {
   --test          测试 CDP 连接（自动启动 Chrome）
   --status        查看 CDP 状态
   --login [url]   等待手动登录
+  --clear-cookies 清空 cookie 后测试（需与 --login 或 open-url 联用）
   --open-url <u>  打开页面测试
   --proxy <addr>  设置代理
   --kill          关闭实例

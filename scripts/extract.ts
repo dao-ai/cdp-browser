@@ -24,6 +24,7 @@ function parseArgs(raw: string[]) {
     if (raw[i] === '--list') { flags.list = 'true'; continue; }
     if (raw[i] === '--json') { flags.json = 'true'; continue; }
     if (raw[i] === '--batch') { flags.batch = 'true'; continue; }
+    if (raw[i] === '--login-gate') { flags['login-gate'] = 'true'; continue; }
     if (raw[i] === '--retries' && i + 1 < raw.length) { flags.retries = raw[++i]; continue; }
     if (!raw[i].startsWith('--')) { urls.push(raw[i]); }
   }
@@ -87,11 +88,13 @@ async function main() {
   --json              输出 JSON
   --batch             强制批量模式（多 URL 自动启用）
   --retries <n>       失败重试次数（默认 1）
+  --login-gate        登录门模式：登录墙自动截图等待扫码
 
 示例:
   npx tsx scripts/extract.ts 'https://v.douyin.com/xxxx/'
   npx tsx scripts/extract.ts --json 'https://v.douyin.com/xxxx/'
   npx tsx scripts/extract.ts --retries 3 'https://v.douyin.com/xxxx/'
+  npx tsx scripts/extract.ts --login-gate 'https://www.xiaohongshu.com/explore/xxx'
   npx tsx scripts/extract.ts '链接1' '链接2' '链接3'
 `);
     process.exit(1);
@@ -100,6 +103,7 @@ async function main() {
   const jsonMode = !!flags.json;
   const batchMode = flags.batch || urls.length > 1;
   const retries = flags.retries ? parseInt(flags.retries) : 1;
+  const loginGate = flags['login-gate'] === 'true';
 
   if (batchMode) {
     const summary = await batchExtract(urls, { retries, retryDelayMs: 1500 });
@@ -117,7 +121,7 @@ async function main() {
 
   // 单条模式
   try {
-    const result = await extract(urls[0], { retries, retryDelayMs: 1500 });
+    const result = await extract(urls[0], { retries, retryDelayMs: 1500, loginGate });
     if (jsonMode) {
       console.log(JSON.stringify(result, null, 2));
     } else {

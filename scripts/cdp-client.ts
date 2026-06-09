@@ -745,15 +745,84 @@ export class CdpPage {
   }
 
   /**
+   * 综合登录墙检测 — 不只看 URL，还看标题 + 内容特征
+   *
+   * 很多平台（小红书、微博等）不跳转登录页，直接返回 404 或网站首页。
+   * 仅靠 URL 模式匹配会完全漏判。
+   *
+   * @returns 命中原因的字符串，或 null 表示无需登录
+   */
+  private async _detectLoginWall(urlCheck: string): Promise<string | null> {
+    const u = urlCheck.toLowerCase();
+
+    // ① URL 模式匹配（传统方式）
+    const loginUrlPatterns = [
+      'login', 'passport', 'signin', 'sign_in', 'sign-in',
+      'accounts.google.com', 'verify', 'captcha', 'auth',
+    ];
+    for (const p of loginUrlPatterns) {
+      if (u.includes(p)) return `URL 包含「${p}」`;
+    }
+
+    // ② 标题检测
+    let title = '';
+    let bodyText = '';
+    try {
+      title = (await this.evaluate('document.title || ""') || '').trim();
+      bodyText = (await this.evaluate('document.body?.innerText?.slice(0, 500) || ""') || '').trim();
+    } catch {}
+
+    const t = title.toLowerCase();
+    const b = bodyText.toLowerCase();
+
+    if (t === '登录' || t === '请登录' || t === 'login' || t === 'sign in') {
+      return `标题为「${title}」`;
+    }
+
+    // 裸站名 — 说明没加载到具体内容页
+    if (title === '小红书' || title === '抖音精选电脑版' || title === '拼多多商城'
+      || title === '微博正文' || title === '出错啦! - bilibili.com' || title === '知乎') {
+      return `标题为站点首页「${title}」（未登录或内容未加载）`;
+    }
+
+    // 404 / 错误页
+    if (t === '页面不存在' || t === 'not found' || t.includes('找不到') || t.includes('不存在')
+      || t.includes('页面不见') || t.includes('访问的页面')
+      || t === '404' || t.includes(' 404 ')) {
+      return `页面不存在（${title}）——可能需要登录`;
+    }
+
+    // body 内容检测
+    if (b.includes('请登录') || b.includes('请先登录') || b.includes('需要登录')) {
+      return `页面内容提示「请登录」`;
+    }
+    if (b.includes('安全验证') || b.includes('人机验证')) {
+      return `遇到安全验证`;
+    }
+
+    // ③ 内容缺失检测：标题很短且 body 很小，大概率被拦截
+    if (title.length > 0 && title.length < 8 && bodyText.length < 200) {
+      return `内容缺失（标题「${title}」, body ${bodyText.length} 字符）`;
+    }
+
+    return null;
+  }
+
+  /**
    * Navigate to URL, detect login wall, wait for user to manually log in.
-   * If a login wall is detected (redirect to login page), it prints a prompt
-   * and polls until the user completes login in the Chrome window.
+   *
+   * 综合检测流程：
+   *   1. goto 目标页
+   *   2. URL + 标题 + 内容三级检测是否遇到登录墙
+   *   3. 如果检测到登录墙，打印提示，轮询等待手动登录
+   *   4. 轮询期间定期重导航到目标页
+   *   5. 登录成功后返回
    */
   async gotoWithLogin(url: string, opts: {
     timeoutMs?: number;
-    /** URL patterns that indicate a login page (e.g. 'login', 'passport') */
+    /** URL patterns that indicate a login page */
     loginPatterns?: string[];
-    /** URL patterns that indicate login success (homepage, feed) */
+    /** URL patterns that indicate login success */
     successPatterns?: string[];
   } = {}) {
     const timeoutMs = opts.timeoutMs || TIMEOUTS.LOGIN;
@@ -764,49 +833,95 @@ export class CdpPage {
     const successPatterns = opts.successPatterns || [];
 
     await this.goto(url, { timeoutMs: 35000 });
-    await sleep(1000);
+    await sleep(2000);
 
     const currentUrl = await this.url();
-    const isLoginPage = loginPatterns.some(p => currentUrl.includes(p));
+    const loginReason = await this._detectLoginWall(currentUrl);
 
-    if (!isLoginPage) {
-      console.log('  ✅ 无需登录，直接进入');
-      return this;
+    if (!loginReason) {
+      const isLoginUrl = loginPatterns.some(p => currentUrl.includes(p));
+      if (!isLoginUrl) {
+        console.log('  ✅ 无需登录，直接进入');
+        return this;
+      }
     }
 
-    console.log(`\n🔐 检测到登录页，请在 Chrome 窗口中手动登录：`);
+    console.log(`\n🔐 检测到登录墙：${loginReason || 'URL匹配'}`);
+    console.log(`   目标: ${url.slice(0, 100)}`);
     console.log(`   当前: ${currentUrl}`);
-    console.log(`   ⏳ 等待登录完成（最多 ${Math.round(timeoutMs / 1000)} 秒）...\n`);
 
-    await this._pollLoginCompletion(Date.now() + timeoutMs, loginPatterns, successPatterns, timeoutMs);
+    // 尝试从当前页面提取二维码图片
+    try {
+      const qrSrc = await this.evaluate(`(function(){
+        var els = document.querySelectorAll('img.qrcode-img, .qrcode img, .qrcode-img, img[class*=qrcode], img[class*=qr], .login-container img, .login-modal img');
+        for (var i=0;i<els.length;i++){
+          var r = els[i].getBoundingClientRect();
+          if (r.width>=100 && r.height>=100 && els[i].src) return els[i].src;
+        }
+        return '';
+      })()`);
+
+      if (qrSrc && qrSrc.startsWith('data:image')) {
+        const matches = qrSrc.match(/^data:image\/(png|jpeg|jpg|gif);base64,(.+)$/);
+        if (matches) {
+          const buf = Buffer.from(matches[2], 'base64');
+          fs.writeFileSync('/tmp/qrcode-latest.png', buf);
+          console.log('__QRCODE_EXTRACTED__:/tmp/qrcode-latest.png');
+          console.log('   📸 二维码已提取 → http://localhost:19876/');
+        }
+      }
+    } catch {}
+
+    console.log(`   ⏳ 请在 Chrome 窗口中手动登录（最多 ${Math.round(timeoutMs / 1000)} 秒）...\n`);
+
+    await this._pollLoginCompletion(Date.now() + timeoutMs, url, loginPatterns, successPatterns, timeoutMs);
     return this;
   }
 
-  /** 轮询等待手动登录完成 */
+  /** 轮询等待手动登录完成 — 综合 URL + 标题 + 重导航检测 */
   private async _pollLoginCompletion(
     deadline: number,
+    targetUrl: string,
     loginPatterns: string[],
     successPatterns: string[],
     totalTimeoutMs: number
   ) {
+    let lastReNav = 0;
+
     while (Date.now() < deadline) {
       await sleep(TIMEOUTS.LOGIN_POLL);
       const u = await this.url().catch(() => '');
 
       if (loginPatterns.some(p => u.includes(p))) {
         if (Date.now() % 15000 < 3000) {
-          console.log('  ⏳ 仍在登录页面，继续等待...');
+          console.log('  ⏳ 仍在登录页面（URL），继续等待...');
+        }
+        continue;
+      }
+
+      let title = '';
+      try { title = (await this.evaluate('document.title || ""') || '').trim(); } catch {}
+      const wallReason = this._quickTitleCheck(title);
+      if (wallReason) {
+        if (Date.now() % 15000 < 3000) {
+          console.log(`  ⏳ 仍在登录墙（${wallReason}），继续等待...`);
+        }
+        if (Date.now() - lastReNav > 15000) {
+          lastReNav = Date.now();
+          try {
+            await this.goto(targetUrl, { timeoutMs: 15000 });
+            await sleep(1500);
+          } catch {}
         }
         continue;
       }
 
       if (successPatterns.length > 0) {
-        if (successPatterns.some(p => u.includes(p))) {
+        if (successPatterns.some(p => u.includes(p) || title.includes(p))) {
           console.log('  ✅ 登录成功！');
           await sleep(TIMEOUTS.POST_LOGIN);
           return;
         }
-        continue;
       }
 
       console.log('  ✅ 登录成功！');
@@ -815,6 +930,33 @@ export class CdpPage {
     }
 
     throw new Error(`登录超时（${Math.round(totalTimeoutMs / 1000)} 秒）`);
+  }
+
+  /** 快速标题检测 — 判断当前标题是否表示遇到了登录墙 */
+  private _quickTitleCheck(title: string): string | null {
+    if (!title) return null;
+    const t = title.toLowerCase();
+
+    if (title === '登录' || title === '请登录' || title === 'login' || title === 'sign in') {
+      return '标题为「' + title + '」';
+    }
+
+    if (title === '小红书' || title === '抖音精选电脑版' || title === '拼多多商城'
+      || title === '微博正文' || title === '出错啦! - bilibili.com' || title === '知乎') {
+      return '标题为站点首页「' + title + '」';
+    }
+
+    if (t === '页面不存在' || t === 'not found' || t.includes('找不到') || t.includes('不存在')
+      || t.includes('页面不见') || t.includes('访问的页面')
+      || t === '404' || t.includes(' 404 ')) {
+      return '页面不存在——' + title;
+    }
+
+    if (t.includes('请登录') || t.includes('请先登录') || t.includes('需要登录')) {
+      return '内容提示需登录';
+    }
+
+    return null;
   }
 
   /**
@@ -1726,10 +1868,12 @@ export class CdpPage {
     httpOnly?: boolean; secure?: boolean; sameSite?: 'Strict' | 'Lax' | 'None';
     expires?: number; // unix timestamp (seconds)
   }) {
-    return this._sessionCall('Network.setCookie', {
-      ...opts,
-      url: await this.url(),
-    });
+    const params: any = { ...opts };
+    // 有 domain 时不传 url，否则 CDP 会用 url 覆盖 domain
+    if (!params.domain) {
+      params.url = await this.url();
+    }
+    return this._sessionCall('Network.setCookie', params);
   }
 
   /** Set multiple cookies at once */
@@ -1738,9 +1882,18 @@ export class CdpPage {
     httpOnly?: boolean; secure?: boolean; sameSite?: 'Strict' | 'Lax' | 'None';
     expires?: number;
   }>) {
-    const url = await this.url();
+    const currentUrl = await this.url();
     return this._sessionCall('Network.setCookies', {
-      cookies: cookies.map(c => ({ ...c, url })),
+      cookies: cookies.map(c => {
+        const item: any = { ...c };
+        if (item.domain) {
+          // 有 domain 就不传 url
+          delete item.url;
+        } else {
+          item.url = currentUrl;
+        }
+        return item;
+      }),
     });
   }
 

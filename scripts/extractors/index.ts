@@ -9,6 +9,8 @@
  *   const result = await extract('https://v.douyin.com/xxxx/');
  *   const results = await batchExtract([url1, url2], { retries: 2 });
  */
+import * as os from 'os';
+import * as path from 'path';
 import { matchSite, SITE_REGISTRY } from '../sites';
 import type { ExtractorResult } from './types';
 import { CdpBrowser } from '../cdp-client';
@@ -25,6 +27,12 @@ export interface ExtractOptions {
   retryDelayMs?: number;
   /** Max concurrent pages (default: 3, for batchExtract) */
   concurrency?: number;
+  /**
+   * 登录门模式：检测到登录墙时，自动截图并等待手动登录。
+   * 截图路径通过 `console.error` 输出（`🔐 LOGIN_REQUIRED` / `📸 SCREENSHOT`），
+   * 智能体可以捕获这些标记发给用户对话。
+   */
+  loginGate?: boolean;
 }
 
 /** Result with timing metadata */
@@ -102,7 +110,9 @@ function isLoginWall(result: ExtractorResult): string | null {
   // 描述或标题提到"请登录"
   if (d.includes('请登录') || t.includes('请先登录') || d.includes('请先登录')) return '需要登录';
   // 空标题/description 说明没拿到内容
-  if (!t || t === '页面不存在' || t === 'not found' || t === '404' || t.includes('找不到') || t.includes('不存在')) return '内容不存在或无法访问';
+  if (!t || t === '页面不存在' || t === 'not found' || t === '404' 
+    || t.includes('找不到') || t.includes('不存在')
+    || t.includes('页面不见') || t.includes('访问的页面')) return '内容不存在或无法访问';
   // 标题或描述提到验证/安全验证
   if (t.includes('验证') || d.includes('安全验证') || d.includes('人机验证')) return '遇到安全验证';
 
@@ -159,6 +169,170 @@ async function retryExtract(
   throw lastErr || new Error('Extraction failed');
 }
 
+// ─── 登录门处理 ────────────────────────────────────────────
+
+/**
+ * 登录门处理：检测到登录墙后，截取二维码截图并等待手动登录。
+ *
+ * 通过 console.error 输出机器可解析标记，智能体能捕获并展示给用户：
+ *   __LOGIN_REQUIRED__:<reason>
+ *   __SCREENSHOT__:<path>
+ *   __LOGIN_WAIT__:<message>  (轮询期间)
+ *   __LOGIN_SUCCESS__: logged in!
+ *
+ * @returns 登录成功后重新提取的结果
+ */
+async function _handleLoginGate(
+  rule: ExtractorRule,
+  url: string,
+  browser: CdpBrowser,
+  reason: string,
+  retries: number,
+  retryDelayMs: number,
+): Promise<TimedExtractorResult> {
+  console.log(`
+🔐 ${rule.name}: 检测到登录墙 — ${reason}`);
+  console.log(`   目标: ${url.slice(0, 100)}`);
+
+  const loginPage = await browser.newPage();
+  await loginPage.setViewport(1440, 900);
+
+  // 导航到目标页
+  await loginPage.goto(url, { timeoutMs: 25000 });
+
+  // 等待登录弹窗出现（最多等 10s）
+  // 很多平台（小红书、淘宝、京东等）登录弹窗是异步加载的
+  console.log(`   🔍 等待登录弹窗...`);
+  await new Promise(r => setTimeout(r, 3000));
+
+  // 找登录弹窗中的二维码图片（优先级从高到低）
+  const loginSelectors = [
+    // 二维码图片本身
+    '.qrcode img', '.qr-code img', 'img[class*=qrcode]', 'img[class*=qr]',
+    '.qrcode canvas', '.qr-code canvas', 'canvas[class*=qrcode]',
+    // 登录弹窗容器（兜底）
+    '.login-dialog, .login-modal, .login-container, .login-box, .login-wrapper',
+    '[class*=login-dialog]', '[class*=login-modal]', '[class*=login-container]',
+    '.qrcode, .qr-code, [class*=qrcode], [class*=qr]',
+    '[class*=popup], [class*=modal], [class*=dialog]',
+    'iframe[src*=login]', 'iframe[src*=passport]',
+  ].join(', ');
+
+  let clippedShot = false;
+  const screenshotPath = path.join(os.tmpdir(), `cdp-login-${Date.now()}.png`);
+
+  try {
+    // 等登录弹窗出现
+    await loginPage.waitForSelector(loginSelectors, 8000);
+    console.log(`   ✅ 检测到登录弹窗`);
+    await new Promise(r => setTimeout(r, 1500));
+
+    // 用 JS 在页面里找最大的登录容器区域并截图
+    const jsSelector = '.login-dialog, .login-modal, .login-container, .login-box, .login-wrapper, .qrcode, .qr-code, [class*=login], [class*=qrcode], [class*=popup], [class*=modal], [class*=dialog]';
+    const clipJson = await loginPage.evaluate(`(function(){
+      var best=null, maxArea=0;
+      var cands=document.querySelectorAll('${jsSelector}');
+      for (var i=0;i<cands.length;i++){
+        var r=cands[i].getBoundingClientRect();
+        var a=r.width*r.height;
+        if (a>maxArea && r.width>100 && r.height>100){ maxArea=a; best=r; }
+      }
+      if (!best) return '';
+      return JSON.stringify({x:best.x,y:best.y,w:best.width,h:best.height});
+    })()`);
+
+    if (clipJson) {
+      const rect = JSON.parse(clipJson);
+      console.log(`   📸 截取登录弹窗区域 (${rect.w}x${rect.h})`);
+      await loginPage.screenshot({
+        path: screenshotPath,
+        clip: { x: rect.x, y: rect.y, width: rect.w, height: rect.h, scale: 1 },
+      });
+      clippedShot = true;
+    }
+  } catch {}
+
+  // 没截到弹窗，截整页
+  if (!clippedShot) {
+    console.log(`   ℹ️  未检测到登录弹窗，整页截图`);
+    await loginPage.screenshot({ path: screenshotPath });
+  }
+
+  console.error(`__LOGIN_REQUIRED__:${reason}`);
+  console.error(`__SCREENSHOT__:${screenshotPath}`);
+  console.log(`   📸 截图保存: ${screenshotPath}`);
+  console.log(`   ⏳ 请在 Chrome 窗口中手动扫码登录（最多 120 秒）...\n`);
+
+  // 轮询等待登录
+  const deadline = Date.now() + 120_000;
+  let lastReNav = 0;
+
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, 3000));
+
+    const u = await loginPage.url().catch(() => '');
+    const checkTitle = (await loginPage.evaluate('document.title || ""').catch(() => '')) || '';
+    const checkBody = (await loginPage.evaluate('(document.body?.innerText?.length || 0).toString()').catch(() => '0')) || '0';
+    const checkBodyLen = parseInt(checkBody, 10) || 0;
+
+    // 用同样的 isLoginWall 逻辑检测是否已脱离登录墙
+    const mockResult: ExtractorResult = {
+      id: '', title: checkTitle, author: '', url: u,
+      description: checkBodyLen < 200 ? `${checkBodyLen} chars` : '有内容',
+    };
+    const stillBlocked = isLoginWall(mockResult);
+
+    if (!stillBlocked) {
+      // 标题正常且 URL 不含登录模式 → 认为登录成功
+      const urlLow = u.toLowerCase();
+      const loginUrlPatterns = ['login', 'passport', 'signin', 'sign_in', 'sign-in',
+        'accounts.google.com', 'verify', 'captcha', 'auth'];
+      if (!loginUrlPatterns.some(p => urlLow.includes(p))) {
+        console.log(`  ✅ 登录成功！标题: ${checkTitle.slice(0, 60)}`);
+        console.error('__LOGIN_SUCCESS__:logged in');
+        await new Promise(r => setTimeout(r, 2000));
+
+        // 关闭登录页，重新提取
+        await loginPage.close().catch(() => {});
+        const newResult = await retryExtract(rule, url, browser, { retries, retryDelayMs });
+        const newTimed: TimedExtractorResult = {
+          ...newResult.result,
+          site: rule.name,
+          elapsedMs: newResult.elapsedMs,
+          retries: newResult.retries,
+        };
+        return newTimed;
+      }
+    }
+
+    // 每 15 秒重导航一次
+    if (Date.now() - lastReNav > 15000) {
+      lastReNav = Date.now();
+      try {
+        await loginPage.goto(url, { timeoutMs: 15000 });
+        await new Promise(r => setTimeout(r, 1500));
+      } catch { /* 网络波动，继续等 */ }
+    }
+
+    const remaining = Math.round((deadline - Date.now()) / 1000);
+    if (remaining % 15 === 0) {
+      console.error(`__LOGIN_WAIT__:⏳ 等待扫码登录... 剩余 ${remaining}s`);
+      console.log(`   ⏳ 等待扫码... 剩余 ${remaining}s`);
+    }
+  }
+
+  console.error('__LOGIN_TIMEOUT__:登录超时');
+  console.log('⏰ 登录超时');
+  await loginPage.close().catch(() => {});
+
+  // 超时后返回原始的带 loginRequired 的结果
+  return {
+    id: '', title: '', author: '', url,
+    site: rule.name, elapsedMs: 0, retries: 0,
+    loginRequired: true,
+  };
+}
+
 // ─── Public API ─────────────────────────────────────────────
 
 /**
@@ -189,6 +363,12 @@ export async function extract(
     if (loginIssue) {
       timed.loginRequired = true;
       console.log(`🔐 ${rule.name}: ${loginIssue} → ${result.title || url} (${elapsedMs}ms)`);
+
+      // 登录门模式：截图 → 等手动登录 → 重新提取
+      if (opts?.loginGate) {
+        const gateResult = await _handleLoginGate(rule, url, browser, loginIssue, retries, retryDelayMs);
+        return gateResult;
+      }
     } else if (actualRetries > 0) {
       console.log(`✅ ${rule.name}: ${result.title || url} (${elapsedMs}ms, ${actualRetries} 次重试)`);
     } else {
