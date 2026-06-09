@@ -335,32 +335,60 @@ export class ActionRegistry {
       priority: 90,
       handler: async (page, args) => {
         const idx = args.index;
-        // 优先用 data-cdp-index 精确定位（解决独立查询导致索引漂移）
-        const found = await page.evaluate(`(function(idx) {
-          // 方法1: data-cdp-index 精确定位
+        // 优先用 data-cdp-index 精确定位
+        // 使用 React/Vue 兼容的原生 setter（参考 CdpPage.fillInput）
+        const found = await page.evaluate(`(function(idx, text) {
           var el = document.querySelector('[data-cdp-index="' + idx + '"]');
-          if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
-            el.focus(); el.value = ''; return 'ok';
+          if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA')) {
+            // fallback: 仅输入框列表
+            var els = document.querySelectorAll('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=checkbox]):not([type=radio]), textarea');
+            el = els[idx];
           }
-          // 方法2: fallback 到旧的索引方式（仅输入框列表）
-          var els = document.querySelectorAll('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=checkbox]):not([type=radio]), textarea');
-          if (els[idx]) { els[idx].focus(); els[idx].value = ''; return 'ok'; }
-          return null;
-        })(${idx})`);
+          if (!el) return null;
+          el.focus();
+          // React/Vue 兼容: 用原生 value setter + dispatch input 事件
+          var desc = Object.getOwnPropertyDescriptor(
+            el.tagName === 'INPUT' ? window.HTMLInputElement.prototype : window.HTMLTextAreaElement.prototype, 'value');
+          if (desc && desc.set) {
+            desc.set.call(el, text);
+          } else {
+            el.value = text;
+          }
+          el.dispatchEvent(new Event('input', { bubbles: true }));
+          el.dispatchEvent(new Event('change', { bubbles: true }));
+          return 'ok';
+        })(${idx}, ${JSON.stringify(String(args.text))})`);
         if (found !== 'ok') throw new Error(`输入框 #${idx} 不存在`);
-        await page.typeText(String(args.text));
         return { success: true, message: `已输入 "${args.text}"`, changedState: true };
       },
     });
 
     this.register({
       name: 'press_enter',
-      description: '按下回车键（常用于确认搜索框输入）',
+      description: '提交当前表单/搜索。先尝试点击搜索按钮，再按回车，最后尝试提交表单。',
       priority: 80,
       handler: async (page) => {
-        await page.pressKey('Enter');
-        await new Promise(r => setTimeout(r, 1000));
-        return { success: true, message: '已按回车', changedState: true };
+        // 先尝试找搜索按钮并点击（B站、知乎等不响应纯回车）
+        const btnClicked = await page.evaluate(`(function() {
+          var btn = document.querySelector(
+            '.search-btn,.search-button,.search-icon,.bili-search-btn,' +
+            'button[type=submit],input[type=submit],' +
+            '.search-form button,.search-form [class*=btn],' +
+            'form [type=submit],.submit-btn,' +
+            '[class*=search] [class*=btn],[class*=search] button'
+          );
+          if (btn) { btn.click(); return true; }
+          // 尝试提交当前焦点元素所在的表单
+          var active = document.activeElement;
+          var form = active ? active.closest('form') : null;
+          if (form) { form.submit(); return true; }
+          return false;
+        })()`);
+        if (!btnClicked) {
+          await page.pressKey('Enter');
+        }
+        await new Promise(r => setTimeout(r, 1500));
+        return { success: true, message: '已提交搜索', changedState: true };
       },
     });
 
