@@ -602,6 +602,7 @@ export class ActionRegistry {
             'douyin.com': ['.video-card', '.feed-item', '.aweme-item'],
             'taobao.com': ['.J_ItemList .item', '.grid-item', '.card-item'],
             'jd.com': ['.gl-item', '.goods-list-v2 .item', '.goods-item'],
+            'github.com': ['.Box-row', '.col-12.d-block', 'article.Box-row'],
           };
 
           // ── 通用卡片选择器 ──
