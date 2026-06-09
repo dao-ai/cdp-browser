@@ -117,6 +117,24 @@ export class DomService {
     // 过滤 + 排序
     const filtered = this._filterElements(rawElements);
 
+    // 向页面元素注入 data-cdp-index，使 action handler 能精确定位
+    // 解决 type_text/click_element 因独立查询导致索引漂移的问题
+    if (filtered.length > 0) {
+      const idMap = filtered
+        .filter(e => e.selector)
+        .map(e => ({ i: e.index, s: e.selector }));
+      try {
+        await this._page.evaluate(`(function(m){
+          for (var i=0;i<m.length;i++) {
+            try {
+              var el=document.querySelector(m[i].s);
+              if (el) el.setAttribute('data-cdp-index', m[i].i);
+            } catch(e) {}
+          }
+        })(${JSON.stringify(idMap)})`);
+      } catch { /* 注入失败不阻塞 */ }
+    }
+
     return {
       url,
       title,

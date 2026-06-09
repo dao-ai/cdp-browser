@@ -308,14 +308,20 @@ export class ActionRegistry {
       ],
       priority: 100,
       handler: async (page, args) => {
-        // 通过 evaluate 找到元素并点击 — 这样不需要依赖 DOM service
+        const idx = args.index;
+        // 优先用 data-cdp-index 精确定位
         await page.evaluate(`(function(idx) {
-          var els = document.querySelectorAll('a, button, input[type=submit], [role=button], [role=link]');
-          var el = els[idx];
+          // 方法1: data-cdp-index 精确定位
+          var el = document.querySelector('[data-cdp-index="' + idx + '"]');
+          if (!el) {
+            // 方法2: fallback — 在所有可交互元素中取索引
+            var els = document.querySelectorAll('a, button, input[type=submit], [role=button], [role=link], [onclick]');
+            el = els[idx];
+          }
           if (!el) throw new Error('元素 ' + idx + ' 不存在');
           el.click();
-        })(${args.index})`);
-        return { success: true, message: '已点击元素 ' + args.index, changedState: true };
+        })(${idx})`);
+        return { success: true, message: '已点击元素 ' + idx, changedState: true };
       },
     });
 
@@ -328,16 +334,20 @@ export class ActionRegistry {
       ],
       priority: 90,
       handler: async (page, args) => {
-        // 先点击输入框
-        const inputs = await page.evaluate(`(function() {
+        const idx = args.index;
+        // 优先用 data-cdp-index 精确定位（解决独立查询导致索引漂移）
+        const found = await page.evaluate(`(function(idx) {
+          // 方法1: data-cdp-index 精确定位
+          var el = document.querySelector('[data-cdp-index="' + idx + '"]');
+          if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
+            el.focus(); el.value = ''; return 'ok';
+          }
+          // 方法2: fallback 到旧的索引方式（仅输入框列表）
           var els = document.querySelectorAll('input:not([type=hidden]):not([type=submit]):not([type=button]):not([type=checkbox]):not([type=radio]), textarea');
-          var el = els[${args.index}];
-          if (!el) return null;
-          el.focus();
-          el.value = '';
-          return true;
-        })()`);
-        if (inputs === null) throw new Error(`输入框 #${args.index} 不存在`);
+          if (els[idx]) { els[idx].focus(); els[idx].value = ''; return 'ok'; }
+          return null;
+        })(${idx})`);
+        if (found !== 'ok') throw new Error(`输入框 #${idx} 不存在`);
         await page.typeText(String(args.text));
         return { success: true, message: `已输入 "${args.text}"`, changedState: true };
       },
