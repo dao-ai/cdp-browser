@@ -355,6 +355,17 @@ export class ActionRegistry {
     });
 
     this.register({
+      name: 'press_escape',
+      description: '按下 Escape 键（常用于关闭弹窗、模态框、取消操作）',
+      priority: 90,
+      handler: async (page) => {
+        await page.pressKey('Escape');
+        await new Promise(r => setTimeout(r, 800));
+        return { success: true, message: '已按 Escape', changedState: true };
+      },
+    });
+
+    this.register({
       name: 'scroll_down',
       description: '向下滚动页面',
       parameters: [

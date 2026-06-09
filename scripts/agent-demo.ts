@@ -30,6 +30,7 @@ async function main() {
   const proxyIdx = args.indexOf('--proxy');
   const proxy = proxyIdx >= 0 ? args[proxyIdx + 1] : undefined;
   const login = args.includes('--login');
+  const clearCookies = args.includes('--clear-cookies');
 
   const apiKey = process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY || '';
   if (!apiKey) {
@@ -50,6 +51,13 @@ async function main() {
   const browser = await connectBrowser(proxy ? { proxy } : undefined);
   const page = await browser.newPage();
   await page.setViewport(1280, 800);
+
+  // 如果指定了 --clear-cookies，先清空 cookie
+  if (clearCookies) {
+    const before = await page.getCookies().catch(() => []);
+    await page.clearCookies().catch(() => {});
+    console.log(`🧹 已清除 ${before.length} 个 cookie（测试模式）`);
+  }
 
   // 如果指定了 --login，先手动登录
   if (login && startUrl) {
