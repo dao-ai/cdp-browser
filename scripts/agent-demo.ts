@@ -12,7 +12,7 @@
  * 环境变量:
  *   DEEPSEEK_API_KEY  — DeepSeek API key（必填）
  *   LLM_BASE_URL      — API 地址（默认 https://api.deepseek.com）
- *   LLM_MODEL         — 模型名（默认 deepseek-chat）
+ *   LLM_MODEL         — 模型名（默认 deepseek-v4-flash）
  */
 
 import { connectBrowser } from './cdp-manager';
@@ -43,7 +43,7 @@ async function main() {
   console.log(`   任务: ${task}`);
   if (startUrl) console.log(`   起始: ${startUrl}`);
   console.log(`   最大步骤: ${maxSteps}`);
-  console.log(`   模型: ${process.env.LLM_MODEL || 'deepseek-chat'}`);
+  console.log(`   模型: ${process.env.LLM_MODEL || 'deepseek-v4-flash'}`);
   console.log('');
 
   // 连接浏览器
@@ -70,7 +70,7 @@ async function main() {
     llm: {
       apiKey,
       baseUrl: process.env.LLM_BASE_URL || 'https://api.deepseek.com',
-      model: process.env.LLM_MODEL || 'deepseek-chat',
+      model: process.env.LLM_MODEL || 'deepseek-v4-flash',
     },
     maxSteps,
     verbose,

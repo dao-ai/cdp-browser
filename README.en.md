@@ -21,6 +21,7 @@
 - **Cross-platform** — Works on Windows (direct), WSL (netsh port forwarding), and Linux (remote Chrome). Auto-detect and launch.
 - **Built-in extractors** — One-command extraction for Douyin, Kuaishou, and Xiaohongshu with unified output format, batch mode, and auto-retry.
 - **Pure TypeScript** — Full type safety throughout.
+- **AI Agent — Natural Language Browser Control** — Built-in lightweight LLM client (zero deps), multimodal vision support, auto plan-execute loop
 
 ---
 
@@ -106,6 +107,77 @@ await page.gotoWithLogin('https://www.douyin.com', {
 });
 ```
 
+### AI Agent — Natural Language Browser Control
+
+The Agent system translates your natural language instructions into browser action sequences — auto-planning, executing, self-correcting, and completing tasks.
+
+```bash
+export DEEPSEEK_API_KEY="sk-xxx"
+npx tsx scripts/agent-demo.ts "Search healthy recipes"
+
+# With starting URL
+npx tsx scripts/agent-demo.ts "Search XHS for fitness" --url https://www.xiaohongshu.com
+
+# With proxy + manual login
+npx tsx scripts/agent-demo.ts "Check my cart" --url https://www.jd.com --proxy http://127.0.0.1:7897 --login
+```
+
+```typescript
+import { connectBrowser } from './scripts/cdp-manager';
+import { BrowserAgent } from './scripts/agent';
+
+const browser = await connectBrowser();
+const page = await browser.newPage();
+await page.setViewport(1280, 800);
+
+const agent = new BrowserAgent(page, {
+  llm: { apiKey: process.env.DEEPSEEK_API_KEY, model: 'deepseek-v4-flash' },
+  maxSteps: 30,
+});
+
+const result = await agent.run('Search healthy recipes', {
+  startUrl: 'https://www.xiaohongshu.com',
+});
+console.log(result.finalOutput);
+// → { success, finalOutput, totalSteps, endReason, history, finalUrl }
+```
+
+**Using LlmClient standalone (without Agent):**
+
+```typescript
+import { LlmClient } from './scripts/llm-client';
+
+const client = new LlmClient({
+  apiKey: process.env.DEEPSEEK_API_KEY,
+  model: 'deepseek-v4-flash',
+});
+
+// Text chat
+const res = await client.chat([
+  { role: 'system', content: 'You are helpful' },
+  { role: 'user', content: 'Hello' },
+]);
+
+// Streaming
+for await (const chunk of client.chatStream([...])) {
+  process.stdout.write(chunk);
+}
+
+// Multimodal (with images)
+const res2 = await client.chat(
+  [{ role: 'user', content: 'Describe this image' }],
+  { images: [base64PngData] },
+);
+```
+
+### LLM Environment Variables
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `AI_API_KEY` | API Key | — |
+| `OPENAI_BASE_URL` / `AI_BASE_URL` | API base URL | `https://api.deepseek.com` |
+| `AI_MODEL` / `LLM_MODEL` | Model name | `deepseek-v4-flash` |
+
 ### Behavior Profiles
 
 ```typescript
@@ -142,6 +214,33 @@ CdpPage.setBehaviorProfile(profile);                     // apply globally
 | Cookie API | `getCookies()` / `setCookie()` / `clearCookies()` | |
 | Clear data | `browser.clearSiteData(origins)` | Cookies/storage/cache |
 | Close | `page.close()` / `browser.close()` | |
+
+### AI Agent API
+
+| Module | Method | Notes |
+|--------|--------|-------|
+| LLM Client | `new LlmClient(config)` | Zero-dep OpenAI-compatible client |
+| Chat | `llm.chat(messages, opts?)` | Non-streaming text/multimodal |
+| Streaming | `llm.chatStream(messages, opts?)` | AsyncGenerator for streaming |
+| Ping | `llm.ping()` | Test API connectivity |
+| Factory | `createLlmClient(config)` | Convenient one-liner |
+| Browser Agent | `new BrowserAgent(page, config)` | AI-powered browser operation engine |
+| Run task | `agent.run(task, opts?)` | Natural language → browser actions |
+| Quick run | `runAgent(page, task, opts?)` | One-line create + run |
+| Multi-page | `runAgentMultiPage(pages, configs)` | Concurrent multi-agent |
+
+**Agent Configuration:**
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `llm.apiKey` | `AI_API_KEY` env | API Key |
+| `llm.model` | `deepseek-v4-flash` | Model name |
+| `maxSteps` | 30 | Max action steps |
+| `maxConsecutiveFailures` | 5 | Auto-stop on consecutive failures |
+| `enableVision` | true | Send screenshots to LLM |
+| `visionCaptureInterval` | 5 | Screenshot every N steps |
+| `actionRetryCount` | 2 | Auto-retry with self-correction |
+| `verbose` | true | Console debug logs |
 
 ### Extractor Types
 

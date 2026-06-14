@@ -90,7 +90,7 @@ function resolveConfig(config?: LlmClientConfig): Required<Pick<LlmClientConfig,
   const model = config?.model
     || process.env.AI_MODEL
     || process.env.LLM_MODEL
-    || 'deepseek-chat';
+    || 'deepseek-v4-flash';
 
   return { ...config, baseUrl, model };
 }

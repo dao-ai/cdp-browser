@@ -23,6 +23,7 @@
 - **跨平台自动连接** — Windows 直连、WSL 通过 `netsh` 端口转发、Linux 可连远程 Chrome，一键启动
 - **10 站内容提取器** — 抖音、快手、小红书、B站、微博、淘宝、京东、拼多多、知乎、百度，统一格式一行提取
 - **TypeScript 原生** — 全程 TypeScript，完整类型定义
+- **AI Agent — 自然语言操控浏览器** — 集成轻量 LLM 客户端，零外部依赖，支持多模态视觉，自动规划-执行循环
 
 ---
 
@@ -237,6 +238,78 @@ await page.goto('https://item.taobao.com/...');       // 直接已登录！
 await page.saveCookies('data/cookies/taobao.json');   // 保存最新
 ```
 
+### AI Agent — 自然语言操控浏览器
+
+Agent 系统可以把你的自然语言指令翻译成浏览器操作序列，自动规划、执行、纠错，直到任务完成。
+
+```bash
+# 一行命令跑起来
+export DEEPSEEK_API_KEY="sk-xxx"
+npx tsx scripts/agent-demo.ts "帮我搜一下减脂餐"
+
+# 指定起始页面
+npx tsx scripts/agent-demo.ts "小红书搜索减脂餐" --url https://www.xiaohongshu.com
+
+# 带代理 + 手动登录
+npx tsx scripts/agent-demo.ts "看看我购物车" --url https://www.jd.com --proxy http://127.0.0.1:7897 --login
+```
+
+```typescript
+import { connectBrowser } from './scripts/cdp-manager';
+import { BrowserAgent } from './scripts/agent';
+
+const browser = await connectBrowser();
+const page = await browser.newPage();
+await page.setViewport(1280, 800);
+
+const agent = new BrowserAgent(page, {
+  llm: { apiKey: process.env.DEEPSEEK_API_KEY, model: 'deepseek-v4-flash' },
+  maxSteps: 30,
+});
+
+const result = await agent.run('帮我搜一下减脂餐', {
+  startUrl: 'https://www.xiaohongshu.com',
+});
+console.log(result.finalOutput);
+// → { success, finalOutput, totalSteps, endReason, history, finalUrl }
+```
+
+**LLM 客户端单独使用**（不用 Agent 的话）：
+
+```typescript
+import { LlmClient } from './scripts/llm-client';
+
+const client = new LlmClient({
+  apiKey: process.env.DEEPSEEK_API_KEY,
+  model: 'deepseek-v4-flash',
+});
+
+// 普通对话
+const res = await client.chat([
+  { role: 'system', content: '你是个有用的助手' },
+  { role: 'user', content: '你好' },
+]);
+
+// 流式
+for await (const chunk of client.chatStream([...])) {
+  process.stdout.write(chunk);
+}
+
+// 多模态（带图片）
+const res2 = await client.chat(
+  [{ role: 'user', content: '描述这张图' }],
+  { images: [base64PngData] },
+);
+```
+
+### LLM 环境变量
+
+| 变量 | 用途 | 默认值 |
+|------|------|--------|
+| `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` / `AI_API_KEY` | API Key | — |
+| `OPENAI_BASE_URL` / `AI_BASE_URL` | API 地址 | `https://api.deepseek.com` |
+| `AI_MODEL` / `LLM_MODEL` | 模型名 | `deepseek-v4-flash` |
+
 ### 编程调用提取器
 
 ```typescript
@@ -297,6 +370,33 @@ CdpPage.setBehaviorProfile(null);
 | 登录 | `page.gotoWithLogin(url)` | 检测登录墙等人登录 |
 | 连接池 | `createPool({ maxPages: 4 })` | 页面复用，并发安全 |
 | 闭合 | `page.close()` / `browser.close()` | 清理 session |
+
+### AI Agent API
+
+| 模块 | 方法 | 说明 |
+|------|------|------|
+| LLM 客户端 | `new LlmClient(config)` | 轻量 OpenAI 兼容客户端，零外部依赖 |
+| 聊天 | `llm.chat(messages, opts?)` | 非流式文本/多模态对话 |
+| 流式聊天 | `llm.chatStream(messages, opts?)` | AsyncGenerator 逐块输出 |
+| 测试连接 | `llm.ping()` | 检查 API 连通性 |
+| 快速创建 | `createLlmClient(config)` | 便捷工厂函数 |
+| Browser Agent | `new BrowserAgent(page, config)` | AI 驱动浏览器操作主引擎 |
+| 运行任务 | `agent.run(task, opts?)` | 自然语言 → 浏览器操作序列 |
+| 快速运行 | `runAgent(page, task, opts?)` | 一行创建 + 运行 |
+| 多页面 | `runAgentMultiPage(pages, configs)` | 并发多 Agent |
+
+**Agent 配置选项：**
+
+| 参数 | 默认 | 说明 |
+|------|------|------|
+| `llm.apiKey` | `AI_API_KEY` 环境变量 | API Key |
+| `llm.model` | `deepseek-v4-flash` | 模型名 |
+| `maxSteps` | 30 | 最大操作步数 |
+| `maxConsecutiveFailures` | 5 | 连续失败自动终止 |
+| `enableVision` | true | 多模态截图给 LLM 看 |
+| `visionCaptureInterval` | 5 | 隔 N 步截图一次 |
+| `actionRetryCount` | 2 | 动作失败自动修正重试 |
+| `verbose` | true | 控制台详细日志 |
 
 ### 提取器返回类型
 
@@ -365,6 +465,25 @@ cdp-browser/
 │   ├── form-submit.ts         # 表单 CLI
 │   ├── extract.ts             # 提取器 CLI
 │   ├── media-sniff.ts         # 媒体嗅探 CLI
+│   ├── agent.ts               # 🤖 AI Agent 主循环（自然语言→浏览器操作）
+│   ├── agent-demo.ts          # Agent CLI Demo
+│   ├── agent-prompts.ts       # LLM 系统提示词模板
+│   ├── agent-history.ts       # 操作历史记录
+│   ├── action-registry.ts     # 动作注册表（可扩展动作库）
+│   ├── dom-service.ts         # DOM → LLM 接口（捕获页面元素列表）
+│   ├── llm-client.ts          # 轻量 LLM 客户端（OpenAI 兼容，零外部依赖）
+│   ├── json-extractor.ts      # 鲁棒 JSON 提取器（修复 LLM 输出格式问题）
+│   ├── planning-system.ts     # 任务规划系统（计划追踪 + 停滞检测）
+│   ├── loop-detector.ts       # 循环检测器（防 LLM 卡在相同动作）
+│   ├── message-compactor.ts   # 消息压缩器（省 token 自动压缩历史）
+│   ├── watchdog/              # Watchdog 系统（弹窗/崩溃/验证码自动处理）
+│   │   ├── index.ts
+│   │   ├── setup.ts
+│   │   ├── event-bus.ts
+│   │   ├── base-watchdog.ts
+│   │   ├── popups-watchdog.ts
+│   │   ├── crash-watchdog.ts
+│   │   └── captcha-watchdog.ts
 │   ├── reconnect-test.ts      # 断线重连测试
 │   ├── pool-test.ts           # 连接池测试
 │   ├── resource-block-test.ts # 资源拦截测试
